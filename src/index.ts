@@ -5,12 +5,13 @@ import { homedir } from 'os';
 import { resolve } from 'path';
 import { existsSync } from 'fs';
 
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 const DEFAULT_CONFIG = resolve(homedir(), '.mcp-on-demand', 'config.json');
 
 async function main() {
   const args = process.argv.slice(2);
 
+  // Parse optional flags
   let manualConfigPath: string | null = null;
   const configIdx = args.indexOf('--config');
   if (configIdx >= 0 && args[configIdx + 1]) {
@@ -20,6 +21,18 @@ async function main() {
   const logIdx = args.indexOf('--log-level');
   if (logIdx >= 0 && args[logIdx + 1]) {
     setLogLevel(args[logIdx + 1] as any);
+  }
+
+  // Parse --mode flag (tool-search | passthrough)
+  let modeOverride: 'tool-search' | 'passthrough' | null = null;
+  const modeIdx = args.indexOf('--mode');
+  if (modeIdx >= 0 && args[modeIdx + 1]) {
+    const m = args[modeIdx + 1];
+    if (m === 'tool-search' || m === 'passthrough') {
+      modeOverride = m;
+    } else {
+      log.warn(`Invalid mode "${m}". Using default. Valid: tool-search, passthrough`);
+    }
   }
 
   try {
@@ -52,8 +65,14 @@ async function main() {
       }
     }
 
+    // Apply mode override from CLI flag
+    if (modeOverride) {
+      config.settings.mode = modeOverride;
+    }
+
     setLogLevel(config.settings.logLevel);
     log.info(`mcp-on-demand v${VERSION}`);
+    log.info(`Mode: ${config.settings.mode}`);
     log.info(`Servers: ${Object.keys(config.servers).length}`);
     log.info(`Idle timeout: ${config.settings.idleTimeout}s`);
 

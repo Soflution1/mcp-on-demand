@@ -19,6 +19,7 @@ export interface ProxySettings {
   logLevel: 'debug' | 'info' | 'warn' | 'error' | 'silent';
   startupTimeout: number;
   prefixTools: boolean;
+  mode: 'passthrough' | 'tool-search';
 }
 
 export interface ProxyConfig {
@@ -35,6 +36,7 @@ const DEFAULT_SETTINGS: ProxySettings = {
   logLevel: 'info',
   startupTimeout: 30000,
   prefixTools: false,
+  mode: 'tool-search',
 };
 
 // ─── Helpers ─────────────────────────────────────────────────────────

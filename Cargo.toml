@@ -1,0 +1,23 @@
+[package]
+name = "mcp-on-demand"
+version = "2.0.0"
+edition = "2021"
+authors = ["SOFLUTION LTD"]
+description = "Fastest MCP proxy — BM25 tool discovery + lazy-loading + preload. Single binary, zero deps."
+license = "MIT"
+repository = "https://github.com/Soflution1/mcp-on-demand"
+keywords = ["mcp", "cursor", "proxy", "ai", "llm"]
+categories = ["command-line-utilities", "development-tools"]
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "6"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

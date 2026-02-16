@@ -1,150 +1,156 @@
-# ⚡ mcp-on-demand
+# mcp-on-demand v2.0 (Rust)
 
-**Lazy-loading MCP proxy with Tool Search for Cursor IDE** — save GBs of RAM and 85% of context tokens.
+**Fastest MCP proxy — BM25 tool discovery, lazy-loading, single binary.**
 
-## The Problem
+Exposes only 2 tools (`discover` + `execute`) to your LLM instead of 200+.
+Sub-microsecond search. ~99% context token savings. Zero external dependencies.
 
-Every MCP server in your Cursor config starts immediately and stays running forever. With 10+ servers, that's **5-10 GB of RAM** wasted on servers you're not even using. On top of that, all tool definitions are loaded into the model's context window, consuming **30-50% of available tokens** before you even type a prompt.
+## Why Rust?
 
-## The Solution
+| | TypeScript | **Rust** |
+|---|---|---|
+| Binary | 150MB (node_modules) | **~4MB** |
+| Startup | ~150ms | **~5ms** |
+| Runtime dep | Node.js 18+ | **None** |
+| BM25 search | ~0.1ms | **~0.01ms** |
+| Distribution | npm install | **Single binary** |
 
-`mcp-on-demand` sits between Cursor and your MCP servers. It provides two key optimizations:
+## Architecture
 
-1. **Lazy server loading** — servers start only when needed, saving GBs of RAM
-2. **Tool Search mode** (v1.2.0) — exposes just 2 meta-tools instead of hundreds, reducing context token usage by ~85%
+```
+Cursor / Claude Desktop / VS Code (sees 2 tools)
+    ↓ stdio (JSON-RPC)
+mcp-on-demand (single Rust binary)
+  ├─ BM25 Search Index (in-memory, <0.01ms)
+  └─ Child Manager (spawn / pool / idle-stop)
+    ↓ stdio (JSON-RPC)
+Your MCP servers (github, supabase, filesystem...)
+```
 
-**Before:** 22 servers, 80 processes, 9.6 GB RAM, ~80K tokens of tool definitions  
-**After:** 1 proxy, ~50 MB RAM, 2 meta-tools (~5K tokens)
+## Install
 
-## Installation (30 seconds)
+### One-line install (no Rust needed)
 
-Add this to your `~/.cursor/mcp.json` alongside your existing servers:
+```bash
+curl -fsSL https://raw.githubusercontent.com/Soflution1/mcp-on-demand/main/install.sh | bash
+```
+
+Downloads a pre-built binary (~4MB) for your platform. No dependencies.
+
+### From source (requires Rust 1.80+)
+
+```bash
+git clone https://github.com/Soflution1/mcp-on-demand.git
+cd mcp-on-demand
+cargo build --release
+cp target/release/mcp-on-demand ~/.local/bin/
+```
+
+## Configure
+
+### Cursor IDE (`~/.cursor/mcp.json`)
 
 ```json
 {
   "mcpServers": {
-    "mcp-on-demand": {
-      "command": "npx",
-      "args": ["-y", "@soflution/mcp-on-demand"]
+    "on-demand": {
+      "command": "/path/to/mcp-on-demand"
     }
   }
 }
 ```
 
-Restart Cursor. Done.
+### Claude Desktop
 
-On first launch, the proxy automatically reads your other MCP servers from the same config file, briefly starts each one to discover its tools, caches the schemas, and then shuts them all down. Subsequent starts are instant.
+```json
+{
+  "mcpServers": {
+    "on-demand": {
+      "command": "/path/to/mcp-on-demand"
+    }
+  }
+}
+```
+
+That's it. No args needed — it auto-detects your other MCP servers from config files.
 
 ## How It Works
 
-### Tool Search Mode (default)
+### Discover Mode (default)
 
-Instead of exposing all 200+ tools to Cursor, the proxy exposes just **2 meta-tools**:
+Your LLM sees only 2 tools:
 
-- **`search_tools`** — Search across all available tools by keyword, capability, or server name. Returns matching tools with their full schemas.
-- **`use_tool`** — Call any discovered tool by name with its arguments.
+1. **`discover(query)`** — BM25 search across all tools from all servers
+2. **`execute(server, tool, arguments)`** — Run any tool on any server
 
-This mirrors Claude Code's native MCP Tool Search feature (shipped January 2026), bringing the same 85% context reduction to Cursor.
-
+Flow:
 ```
-User: "Create a branch on GitHub"
-
-Cursor calls search_tools({query: "git branch"})
-  → Returns: create_branch, list_branches, delete_branch with full schemas
-
-Cursor calls use_tool({tool_name: "create_branch", arguments: {repo: "...", branch: "..."}})
-  → Proxy spawns GitHub MCP server on-demand, executes tool, returns result
+LLM: "I need to read a file"
+  → calls discover("read file")
+  → gets: [{server: "filesystem", tool: "read_file", schema: {...}}]
+  → calls execute("filesystem", "read_file", {path: "/foo"})
+  → gets file content
 ```
 
 ### Passthrough Mode
 
-For users who prefer the classic behavior (all tools exposed directly):
-
-```json
-{
-  "mcpServers": {
-    "mcp-on-demand": {
-      "command": "npx",
-      "args": ["-y", "@soflution/mcp-on-demand", "--mode", "passthrough"]
-    }
-  }
-}
-```
-
-### Architecture
-
-```
-Cursor <-stdio-> mcp-on-demand proxy <-stdio-> MCP Servers (spawned on-demand)
-                     |
-              Schema Cache (~50 MB)
-              Tool Search Index
-              (all tools indexed)
-```
-
-1. Proxy starts with cached tool schemas (~50 MB RAM)
-2. **Tool Search mode:** Cursor sees 2 meta-tools (search_tools + use_tool)
-3. **Passthrough mode:** Cursor sees all tools directly from cache
-4. Either way: servers only spawn when a tool is actually called
-5. Server idles for 5 min -> proxy kills it automatically
-
-## What Gets Proxied
-
-- **Proxied:** All stdio-based MCP servers (npx, node, python, etc.)
-- **Skipped:** URL-based servers (like Vercel MCP), disabled servers, and the proxy itself
-- Skipped servers continue working normally through Cursor's native handling
-
-## Optional CLI Commands
+All tools exposed directly with `server__tool` prefix (legacy mode).
 
 ```bash
-npx @soflution/mcp-on-demand status   # Show detected servers, cache, mode info
-npx @soflution/mcp-on-demand reset    # Clear cache (forces re-discovery)
-npx @soflution/mcp-on-demand help     # Show help
+MCP_ON_DEMAND_MODE=passthrough mcp-on-demand
 ```
 
-## Configuration
+## Auto-Detection
 
-The proxy works with zero configuration. For advanced users, create `~/.mcp-on-demand/config.json`:
+Config files checked (in order):
+- `~/.cursor/mcp.json`
+- `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS)
+- `%APPDATA%/Claude/claude_desktop_config.json` (Windows)
+- `~/.config/claude/claude_desktop_config.json` (Linux)
+- `~/.codeium/windsurf/mcp_config.json`
+- `~/.vscode/mcp.json`
 
-```json
-{
-  "settings": {
-    "mode": "tool-search",
-    "idleTimeout": 300,
-    "logLevel": "info",
-    "startupTimeout": 30000,
-    "prefixTools": false
-  }
-}
+Servers starting with `_` are skipped (disabled convention).
+Self-references to `mcp-on-demand` are automatically excluded.
+
+## Environment Variables
+
+| Variable | Values | Default |
+|---|---|---|
+| `MCP_ON_DEMAND_MODE` | `discover` / `passthrough` | `discover` |
+| `MCP_ON_DEMAND_PRELOAD` | `all` / `none` | `all` |
+| `MCP_ON_DEMAND_DEBUG` | `1` | - |
+
+## CLI
+
+```bash
+mcp-on-demand              # Start proxy (default)
+mcp-on-demand status       # Show detected servers
+mcp-on-demand search "git" # Test BM25 search
+mcp-on-demand version      # Show version
+mcp-on-demand help         # Show help
 ```
 
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `mode` | `tool-search` | `tool-search` (2 meta-tools) or `passthrough` (all tools direct) |
-| `idleTimeout` | 300 | Seconds before stopping an idle server |
-| `logLevel` | info | debug, info, warn, error, silent |
-| `startupTimeout` | 30000 | Max ms to wait for a server to start |
-| `prefixTools` | false | Prefix tool names with server name (passthrough mode) |
+## Performance
 
-## Changelog
+| Metric | Value |
+|---|---|
+| Proxy startup | ~5ms |
+| BM25 search (200 tools) | <0.01ms |
+| Index build (200 tools) | <0.5ms |
+| Tool execution overhead | <2ms |
+| Binary size (stripped) | ~4MB |
+| RAM usage | ~5MB |
+| Context token savings | ~99% |
 
-### v1.2.0 — Tool Search Mode
-- **NEW:** Tool Search mode (default) — exposes 2 meta-tools instead of all tools
-- **NEW:** `search_tools` meta-tool with BM25-style keyword matching
-- **NEW:** `use_tool` meta-tool for calling discovered tools
-- **NEW:** `--mode` CLI flag to switch between tool-search and passthrough
-- Context token reduction of ~85% in Cursor
-- Server capability catalog auto-generated from cached schemas
+## Dependencies
 
-### v1.1.0 — Initial Release
-- Auto-detection of Cursor MCP config
-- On-demand server spawning with idle timeout
-- Schema caching for instant startup
-- Duplicate tool detection and collision handling
+Production binary: **zero runtime dependencies**.
 
-## Requirements
-
-- Node.js 18+
-- Cursor IDE with MCP servers configured
+Build only:
+- `tokio` — async runtime
+- `serde` / `serde_json` — JSON parsing
+- `dirs` — cross-platform home directory detection
 
 ## License
 

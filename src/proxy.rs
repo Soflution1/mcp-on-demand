@@ -163,7 +163,7 @@ impl ProxyServer {
         serde_json::json!([
             {
                 "name": "discover",
-                "description": "Search for available MCP tools across all servers using natural language. Returns matching tools with their full schemas, plus the complete list of available servers. Always call this FIRST to find the right tool before calling execute.",
+                "description": "Search for available MCP tools across all servers using natural language. Returns matching tools with their full schemas, plus the complete list of available servers. Only call this when you don't know which server or tool to use. If you already know the server and tool name from a previous discover call in this conversation, call execute directly.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -182,7 +182,7 @@ impl ProxyServer {
             },
             {
                 "name": "execute",
-                "description": "Execute a tool on a specific MCP server. Use the server and tool names from discover results.",
+                "description": "Execute a tool on a specific MCP server. Use server and tool names from a previous discover result, or call directly if you already know them.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {

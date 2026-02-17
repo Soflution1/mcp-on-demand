@@ -8,8 +8,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
-use crate::config::ServerConfig;
-use crate::protocol::{JsonRpcResponse, ToolDef};
+pub use crate::config::ServerConfig;
+use crate::protocol::ToolDef;
 
 #[derive(Debug)]
 struct ChildProcess {

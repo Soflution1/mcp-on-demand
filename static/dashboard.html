@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MCP on Demand</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#0a0a0f;--surface:#12121a;--card:#16161f;--border:#1e1e2e;--text:#e2e2e6;--text-dim:#6b6b80;--accent:#fbbf24;--accent-dim:rgba(251,191,36,.08);--danger:#ef4444;--ok:#22c55e;--blue:#3b82f6}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;opacity:0;transition:opacity .3s}
+body.ready{opacity:1}
+</style>
+<style>
+.container{max-width:1100px;margin:0 auto;padding:20px 24px}
+header{display:flex;align-items:center;justify-content:space-between;padding:16px 0;border-bottom:1px solid var(--border);margin-bottom:24px}
+.logo{font-size:18px;font-weight:700;letter-spacing:-.3px}.logo span{color:var(--accent)}
+.tabs{display:flex;gap:2px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:3px}
+.tab{padding:7px 18px;border-radius:8px;font-size:12px;font-weight:600;color:var(--text-dim);cursor:pointer;transition:all .2s}
+.tab.active{background:var(--accent-dim);color:var(--accent)}
+.tab:hover:not(.active){color:var(--text)}
+.stats{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:24px}
+.stat{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px;text-align:center}
+.stat-val{font-size:28px;font-weight:700;color:var(--accent)}.stat-val small{font-size:14px;color:var(--text-dim);font-weight:400}
+.stat-label{font-size:11px;color:var(--text-dim);margin-top:4px;text-transform:uppercase;letter-spacing:.5px}
+.toolbar{display:flex;gap:10px;margin-bottom:18px;align-items:center}
+.search{flex:1;position:relative}
+.search input{width:100%;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 36px 10px 14px;color:var(--text);font-size:13px;outline:none;transition:border-color .2s}
+.search input:focus{border-color:var(--accent)}
+.search-clear{position:absolute;right:10px;top:50%;transform:translateY(-50%);color:var(--text-dim);cursor:pointer;font-size:14px}
+.btn{padding:9px 18px;border-radius:10px;font-size:12px;font-weight:600;cursor:pointer;transition:all .15s;border:1px solid transparent}
+.btn-primary{background:var(--accent);color:#000}.btn-primary:hover{filter:brightness(1.1)}
+.btn-ghost{background:transparent;border-color:var(--border);color:var(--text-dim)}.btn-ghost:hover{border-color:var(--text-dim)}
+.btn-danger{background:rgba(239,68,68,.08);color:var(--danger);border-color:rgba(239,68,68,.2)}.btn-danger:hover{background:rgba(239,68,68,.15)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px;cursor:pointer;transition:all .15s}
+.card:hover{border-color:rgba(251,191,36,.25);transform:translateY(-1px)}
+.card-head{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.card-icon{font-size:22px;width:38px;height:38px;display:flex;align-items:center;justify-content:center;background:var(--accent-dim);border-radius:10px}
+.card-name{font-weight:600;font-size:14px;flex:1}
+.card-dot{width:8px;height:8px;border-radius:50%}.dot-ok{background:var(--ok)}.dot-fail{background:var(--danger)}
+.card.disabled{opacity:.45;filter:grayscale(.4)}
+.card.disabled:hover{opacity:.6}
+.toggle{position:relative;width:36px;height:20px;flex-shrink:0}
+.toggle input{opacity:0;width:0;height:0;position:absolute}
+.toggle-track{position:absolute;inset:0;background:var(--border);border-radius:10px;transition:background .2s;cursor:pointer}
+.toggle input:checked+.toggle-track{background:var(--ok)}
+.toggle-knob{position:absolute;top:2px;left:2px;width:16px;height:16px;background:#fff;border-radius:50%;transition:transform .2s}
+.toggle input:checked~.toggle-knob{transform:translateX(16px)}
+.card-meta{font-size:11px;color:var(--text-dim);display:flex;gap:12px}
+.card-cat{display:inline-block;font-size:10px;padding:2px 8px;border-radius:6px;background:var(--accent-dim);color:var(--accent);margin-top:8px;font-weight:500}
+</style>
+<style>
+/* Modal */
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.65);display:flex;align-items:center;justify-content:center;z-index:100;backdrop-filter:blur(4px)}
+.modal{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:24px;width:540px;max-height:85vh;overflow-y:auto;animation:slideUp .2s}
+@keyframes slideUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+.modal-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}
+.modal-title{font-size:16px;font-weight:700}
+.modal-close{color:var(--text-dim);font-size:18px;cursor:pointer;background:none;border:none}
+.modal-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:20px}
+.modal-actions-between{justify-content:space-between}
+
+/* JSON Editor with overlay highlighting */
+.json-editor{position:relative;border-radius:10px;overflow:hidden;border:1px solid var(--border);background:#0d0d14;transition:border-color .2s}
+.json-editor:focus-within{border-color:var(--accent)}
+.json-highlight,.json-input{font-family:'SF Mono',Monaco,Consolas,monospace;font-size:12px;line-height:1.6;padding:14px;white-space:pre-wrap;word-wrap:break-word;tab-size:2}
+.json-highlight{position:absolute;inset:0;pointer-events:none;overflow:hidden;color:transparent}
+.json-input{width:100%;min-height:220px;resize:vertical;background:transparent;color:var(--text);border:none;outline:none;caret-color:var(--accent);-webkit-text-fill-color:transparent}
+.json-highlight .jk{color:#7dd3fc} /* keys */
+.json-highlight .js{color:#a5b4fc} /* string values */
+.json-highlight .jn{color:var(--accent)} /* numbers */
+.json-highlight .jt{color:#fca5a5;font-weight:600;background:rgba(252,165,165,.08);border-radius:3px;padding:0 2px} /* tokens/secrets */
+.json-highlight .jp{color:var(--text-dim)} /* punctuation */
+.json-error{font-size:11px;color:var(--danger);padding:8px 12px;background:rgba(239,68,68,.06);border:1px solid rgba(239,68,68,.15);border-radius:8px;margin-top:8px}
+.json-hint{font-size:11px;color:var(--text-dim);margin-bottom:10px;line-height:1.5}
+
+/* Icon picker */
+.icon-picker{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:14px}
+.icon-opt{width:36px;height:36px;display:flex;align-items:center;justify-content:center;font-size:18px;border-radius:8px;cursor:pointer;border:2px solid transparent;background:var(--card);transition:all .15s}
+.icon-opt:hover{border-color:var(--border)}
+.icon-opt.active{border-color:var(--accent);background:var(--accent-dim)}
+
+/* Info box */
+.info-box{padding:10px 14px;border-radius:10px;margin-top:12px;font-size:12px}
+.info-ok{background:rgba(34,197,94,.06);border:1px solid rgba(34,197,94,.15);color:var(--ok)}
+.info-fail{background:rgba(239,68,68,.06);border:1px solid rgba(239,68,68,.15);color:var(--danger)}
+.info-title{font-weight:600}.info-desc{color:var(--text-dim);margin-top:2px}
+
+/* Toast */
+.toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);padding:10px 24px;border-radius:10px;font-size:13px;font-weight:500;background:var(--ok);color:#fff;z-index:200;transition:opacity .3s}
+.toast.toast-danger{background:var(--danger)}
+.toast.hidden{opacity:0;pointer-events:none}
+
+/* Gen log */
+.gen-log{margin-top:14px;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px;max-height:200px;overflow-y:auto}
+.gl{font-size:11px;padding:3px 0;font-family:monospace}.gl-ok{color:var(--ok)}.gl-err{color:var(--danger)}.gl-info{color:var(--blue)}
+
+/* Settings */
+.setting-row{display:flex;align-items:center;gap:16px;padding:14px 0;border-bottom:1px solid var(--border)}
+.setting-label{flex:1}.setting-name{font-weight:600;font-size:13px}.setting-desc{font-size:11px;color:var(--text-dim);margin-top:2px}
+.setting-input select,.setting-input input{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:8px 12px;color:var(--text);font-size:13px;outline:none}
+.setting-input select:focus,.setting-input input:focus{border-color:var(--accent)}
+
+/* Tools view */
+.tool-list{display:flex;flex-direction:column;gap:6px}
+.tool-row{display:flex;align-items:center;gap:12px;padding:10px 14px;background:var(--card);border:1px solid var(--border);border-radius:10px;font-size:12px}
+.tool-name{font-weight:600;color:var(--accent);min-width:180px;font-family:monospace}
+.tool-server{color:var(--text-dim);min-width:120px}
+.tool-desc{color:var(--text-dim);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+.spinner{display:inline-block;width:14px;height:14px;border:2px solid rgba(0,0,0,.2);border-top-color:#000;border-radius:50%;animation:spin .6s linear infinite;margin-right:6px;vertical-align:middle}
+@keyframes spin{to{transform:rotate(360deg)}}
+.hidden{display:none!important}
+.pill{font-size:10px;padding:1px 7px;border-radius:6px;font-weight:600;margin-left:6px}
+.pill-red{background:rgba(239,68,68,.1);color:var(--danger)}
+</style>
+</head><body>
+<div class="container" id="main-content">
+  <header>
+    <div class="logo"><svg width="28" height="28" viewBox="0 0 28 28" fill="none" style="vertical-align:middle;margin-right:8px"><circle cx="14" cy="14" r="4.5" fill="#fbbf24"/><circle cx="5" cy="5" r="2" fill="#fbbf24" opacity=".5"/><circle cx="23" cy="5" r="2" fill="#fbbf24" opacity=".5"/><circle cx="5" cy="23" r="2" fill="#fbbf24" opacity=".5"/><circle cx="23" cy="23" r="2" fill="#fbbf24" opacity=".5"/><circle cx="14" cy="2.5" r="1.5" fill="#fbbf24" opacity=".4"/><circle cx="25.5" cy="14" r="1.5" fill="#fbbf24" opacity=".4"/><circle cx="2.5" cy="14" r="1.5" fill="#fbbf24" opacity=".4"/><line x1="5" y1="5" x2="11" y2="11.5" stroke="#fbbf24" stroke-width=".8" opacity=".3"/><line x1="23" y1="5" x2="17" y2="11.5" stroke="#fbbf24" stroke-width=".8" opacity=".3"/><line x1="5" y1="23" x2="11" y2="16.5" stroke="#fbbf24" stroke-width=".8" opacity=".3"/><line x1="23" y1="23" x2="17" y2="16.5" stroke="#fbbf24" stroke-width=".8" opacity=".3"/><line x1="14" y1="2.5" x2="14" y2="9.5" stroke="#fbbf24" stroke-width=".8" opacity=".3"/><line x1="25.5" y1="14" x2="18.5" y2="14" stroke="#fbbf24" stroke-width=".8" opacity=".3"/><line x1="2.5" y1="14" x2="9.5" y2="14" stroke="#fbbf24" stroke-width=".8" opacity=".3"/></svg>MCP <span>on Demand</span></div>
+    <div class="tabs">
+      <div class="tab active" data-view="servers" onclick="switchView('servers')">Servers</div>
+      <div class="tab" data-view="tools" onclick="switchView('tools')">Tools</div>
+      <div class="tab" data-view="settings" onclick="switchView('settings')">Settings</div>
+    </div>
+  </header>
+
+  <div class="stats">
+    <div class="stat"><div class="stat-val" id="stat-servers">0</div><div class="stat-label">Servers</div></div>
+    <div class="stat"><div class="stat-val" id="stat-tools">0</div><div class="stat-label">Tools Indexed</div></div>
+    <div class="stat"><div class="stat-val"><span id="online-count" style="color:var(--ok)">0</span><span style="color:var(--text-dim);font-size:18px;margin:0 4px">/</span><span id="fail-count" style="color:var(--ok)">0</span></div><div class="stat-label">Cached / Failed</div></div>
+    <div class="stat"><div class="stat-val" id="stat-tokens-saved">—</div><div class="stat-label">Tokens Saved</div></div>
+    <div class="stat"><div class="stat-val" id="stat-savings-pct">—</div><div class="stat-label">Context Saved</div></div>
+  </div>
+  <!-- Servers View -->
+  <div id="view-servers">
+    <div class="toolbar">
+      <div class="search"><input id="search-input" placeholder="Search servers..." oninput="renderGrid()"><span class="search-clear hidden" id="search-clear" onclick="document.getElementById('search-input').value='';renderGrid()">✕</span></div>
+      <button class="btn btn-primary" onclick="showAddModal()">+ Add Server</button>
+      <button class="btn btn-ghost" id="rebuild-btn" onclick="regenerateCache()">↻ Rebuild Cache</button>
+    </div>
+    <div class="grid" id="server-grid"></div>
+    <div class="gen-log hidden" id="gen-log"></div>
+  </div>
+
+  <!-- Tools View -->
+  <div id="view-tools" class="hidden">
+    <div class="toolbar"><div class="search"><input id="tool-search" placeholder="Search tools..." oninput="renderTools()"></div></div>
+    <div class="tool-list" id="tool-list"></div>
+  </div>
+
+  <!-- Settings View -->
+  <div id="view-settings" class="hidden">
+    <div class="setting-row"><div class="setting-label"><div class="setting-name">Mode</div><div class="setting-desc">discover = 2 meta-tools, passthrough = all tools exposed</div></div><div class="setting-input"><select id="setting-mode"><option value="discover">discover</option><option value="passthrough">passthrough</option></select></div></div>
+    <div class="setting-row"><div class="setting-label"><div class="setting-name">Idle Timeout (seconds)</div><div class="setting-desc">Kill idle server processes after this duration</div></div><div class="setting-input"><input type="number" id="setting-timeout" value="300" min="30" max="3600"></div></div>
+    <div class="setting-row"><div class="setting-label"><div class="setting-name">Cache</div><div class="setting-desc" id="cache-info">No cache</div></div><div><button class="btn btn-ghost" id="settings-rebuild" onclick="regenerateCache()">↻ Rebuild</button></div></div>
+    <div style="margin-top:20px"><button class="btn btn-primary" onclick="saveSettings()">Save Settings</button></div>
+  </div>
+  <!-- Add Modal -->
+  <div class="overlay hidden" id="add-modal" onclick="hideAddModal()">
+    <div class="modal" onclick="event.stopPropagation()">
+      <div class="modal-head"><h2 class="modal-title">Add MCP Server</h2><button class="modal-close" onclick="hideAddModal()">✕</button></div>
+      <div class="json-hint">Paste JSON from any MCP server README or Cursor config. Single or multiple servers accepted. Supports <code>mcpServers</code> wrapper.</div>
+      <div class="json-editor">
+        <div class="json-highlight" id="add-highlight"></div>
+        <textarea class="json-input" id="add-json" spellcheck="false" oninput="syncHighlight('add')" onscroll="syncScroll('add')" placeholder='{
+  "github": {
+    "command": "npx",
+    "args": ["-y", "@modelcontextprotocol/server-github"],
+    "env": { "GITHUB_TOKEN": "your-token-here" }
+  }
+}'></textarea>
+      </div>
+      <div class="json-error hidden" id="add-json-error"></div>
+      <div class="modal-actions"><button class="btn btn-ghost" onclick="hideAddModal()">Cancel</button><button class="btn btn-primary" onclick="addServer()">Add Server</button></div>
+    </div>
+  </div>
+
+  <!-- Edit Modal -->
+  <div class="overlay hidden" id="edit-modal" onclick="hideEditModal()">
+    <div class="modal" onclick="event.stopPropagation()">
+      <div class="modal-head"><h2 class="modal-title" id="edit-title">Edit Server</h2><button class="modal-close" onclick="hideEditModal()">✕</button></div>
+      <div class="json-editor">
+        <div class="json-highlight" id="edit-highlight"></div>
+        <textarea class="json-input" id="edit-json" spellcheck="false" oninput="syncHighlight('edit')" onscroll="syncScroll('edit')"></textarea>
+      </div>
+      <div class="json-error hidden" id="edit-json-error"></div>
+      <div id="edit-info-box"></div>
+      <div class="modal-actions modal-actions-between">
+        <button class="btn btn-danger" onclick="deleteCurrentServer()">Delete</button>
+        <div style="display:flex;gap:8px"><button class="btn btn-ghost" onclick="hideEditModal()">Cancel</button><button class="btn btn-primary" onclick="updateServer()">Save</button></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast hidden" id="toast"></div>
+
+  <!-- Welcome popup (first visit) -->
+  <div class="overlay hidden" id="welcome-modal">
+    <div class="modal" onclick="event.stopPropagation()" style="text-align:center">
+      <div style="font-size:48px;margin-bottom:12px">🎉</div>
+      <h2 style="font-size:20px;font-weight:700;margin-bottom:8px">Welcome to MCP on Demand</h2>
+      <p style="color:var(--text-dim);font-size:13px;line-height:1.6;margin-bottom:16px">
+        All your MCP servers are now managed from this dashboard.<br>
+        Add, remove, enable/disable servers. Rebuild cache in one click.
+      </p>
+      <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:16px">
+        <div style="font-size:11px;color:var(--text-dim);margin-bottom:6px">★ BOOKMARK THIS URL</div>
+        <div style="font-size:16px;font-weight:700;color:var(--accent);font-family:monospace">http://127.0.0.1:24680</div>
+      </div>
+      <p style="color:var(--text-dim);font-size:11px;margin-bottom:18px">
+        Run <code style="background:var(--card);padding:2px 6px;border-radius:4px">mcp-on-demand dashboard</code> anytime to reopen.
+      </p>
+      <button class="btn btn-primary" onclick="dismissWelcome()" style="width:100%;padding:12px">Got it, let's go!</button>
+    </div>
+  </div>
+</div>
+<script>
+let servers=[], settings={mode:'discover',idleTimeout:300}, totalTools=0, cacheExists=false;
+let currentView='servers', editingServerName=null;
+
+const ICONS={'github':'🐙','filesystem':'📁','supabase':'⚡','stripe':'💳','playwright':'🎭','firecrawl':'🔥','memory':'🧠','openmemory':'🧠','chrome-devtools':'🔧','desktop-commander':'🖥️','resend':'📧','lighthouse':'💡','magic':'✨','sequential-thinking':'🔗','context7':'📚','svelte':'🟠','browserbase':'🌐','cloudflare-docs':'☁️','cloudflare-agents-docs':'☁️','app-store-connect':'🍎','xcodemcp':'📱','task-master':'📋'};
+const CATS={'github':'DevOps','filesystem':'System','supabase':'Database','stripe':'Payments','playwright':'Testing','firecrawl':'Web Scraping','memory':'AI','openmemory':'AI','chrome-devtools':'DevTools','desktop-commander':'System','resend':'Email','lighthouse':'Performance','magic':'AI','sequential-thinking':'AI','context7':'Docs','svelte':'Frontend','browserbase':'Testing','cloudflare-docs':'Infra','cloudflare-agents-docs':'Infra','app-store-connect':'Mobile','xcodemcp':'Mobile','task-master':'Project'};
+function icon(n){return ICONS[n]||'🔌'}
+function cat(n){return CATS[n]||'Custom'}
+
+// Token patterns to highlight differently
+const TOKEN_PATTERNS = /("(?:TOKEN|KEY|SECRET|PASSWORD|API_KEY|APIKEY|AUTH|CREDENTIALS?|PRIVATE)[^"]*"\s*:\s*)"([^"]+)"/gi;
+const ENV_KEY_PATTERN = /("(?:GITHUB_TOKEN|OPENAI_API_KEY|ANTHROPIC_API_KEY|SUPABASE_[A-Z_]+|STRIPE_[A-Z_]+|RESEND_[A-Z_]+|FIRECRAWL_[A-Z_]+|BROWSERBASE_[A-Z_]+|[A-Z_]*(?:TOKEN|KEY|SECRET|PASSWORD|API_KEY)[A-Z_]*)"\s*:\s*)"([^"]+)"/gi;
+
+function highlightJson(text){
+  if(!text)return '';
+  // Escape HTML
+  let h=text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  // Highlight tokens/secrets first (env values)
+  h=h.replace(/(&quot;|")((?:[A-Z_]*(?:TOKEN|KEY|SECRET|PASSWORD|API_KEY|APIKEY|AUTH)[A-Z_]*))\1(\s*:\s*)(&quot;|")([^"&]*)\4/gi,
+    '<span class="jk">"$2"</span>$3<span class="jt">"$5"</span>');
+  // Keys
+  h=h.replace(/("([^"\\]|\\.)*")\s*:/g,'<span class="jk">$1</span>:');
+  // String values (not already highlighted)
+  h=h.replace(/:(\s*)"(([^"\\]|\\.)*)"/g,':<span class="js">$1"$2"</span>');
+  // Numbers
+  h=h.replace(/:\s*(\d+\.?\d*)/g,': <span class="jn">$1</span>');
+  // Punctuation
+  h=h.replace(/([{}\[\],])/g,'<span class="jp">$1</span>');
+  return h;
+}
+function syncHighlight(prefix){
+  const ta=document.getElementById(prefix+'-json');
+  const hi=document.getElementById(prefix+'-highlight');
+  hi.innerHTML=highlightJson(ta.value)+'\n';
+}
+function syncScroll(prefix){
+  const ta=document.getElementById(prefix+'-json');
+  const hi=document.getElementById(prefix+'-highlight');
+  hi.scrollTop=ta.scrollTop;hi.scrollLeft=ta.scrollLeft;
+}
+
+function notify(msg,type='success'){
+  const t=document.getElementById('toast');t.textContent=msg;
+  t.className='toast'+(type==='danger'?' toast-danger':'');
+  setTimeout(()=>t.classList.add('hidden'),3000);
+}
+
+function switchView(view){
+  currentView=view;
+  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.view===view));
+  document.getElementById('view-servers').classList.toggle('hidden',view!=='servers');
+  document.getElementById('view-tools').classList.toggle('hidden',view!=='tools');
+  document.getElementById('view-settings').classList.toggle('hidden',view!=='settings');
+  if(view==='tools')renderTools();
+}
+async function fetchServers(){
+  try{
+    const res=await fetch('/api/servers');const data=await res.json();
+    servers=data.servers||[];settings=data.settings||settings;totalTools=data.totalTools||0;cacheExists=data.cacheExists||false;
+    renderAll();
+  }catch(e){console.error(e)}
+}
+
+function renderAll(){
+  const active=servers.filter(s=>s.status==='cached').length;
+  const failed=servers.filter(s=>s.status!=='cached').length;
+  document.getElementById('online-count').textContent=active;
+  document.getElementById('fail-count').textContent=failed;
+  document.getElementById('fail-count').style.color=failed>0?'var(--danger)':'var(--ok)';
+  document.getElementById('stat-servers').textContent=servers.length;
+  document.getElementById('stat-tools').textContent=totalTools;
+  // Token savings calculator: ~80 tokens per tool definition average
+  const TOKENS_PER_TOOL=80;
+  const DISCOVER_OVERHEAD=160; // 2 meta-tools
+  const mode=settings.mode||'discover';
+  const passthroughCost=totalTools*TOKENS_PER_TOOL;
+  const discoverCost=DISCOVER_OVERHEAD;
+  if(mode==='discover'&&totalTools>0){
+    const saved=passthroughCost-discoverCost;
+    const pct=Math.round((saved/passthroughCost)*100);
+    document.getElementById('stat-tokens-saved').innerHTML=saved>1000?Math.round(saved/1000)+'<small>k</small>':saved.toString();
+    document.getElementById('stat-savings-pct').innerHTML=pct+'<small>%</small>';
+  }else if(mode==='passthrough'){
+    document.getElementById('stat-tokens-saved').innerHTML='0';
+    document.getElementById('stat-savings-pct').innerHTML='<small>passthrough</small>';
+  }else{
+    document.getElementById('stat-tokens-saved').innerHTML='—';
+    document.getElementById('stat-savings-pct').innerHTML='—';
+  }
+  document.getElementById('setting-mode').value=settings.mode||'discover';
+  document.getElementById('setting-timeout').value=settings.idleTimeout||300;
+  document.getElementById('cache-info').textContent=cacheExists?totalTools+' tools cached':'No cache';
+  renderGrid();
+}
+
+function renderGrid(){
+  const q=(document.getElementById('search-input').value||'').toLowerCase();
+  document.getElementById('search-clear').classList.toggle('hidden',!q);
+  const filtered=servers.filter(s=>!q||s.name.toLowerCase().includes(q)||cat(s.name).toLowerCase().includes(q));
+  const grid=document.getElementById('server-grid');
+  grid.innerHTML=filtered.map(s=>`
+    <div class="card${s.disabled?' disabled':''}" onclick="openEdit('${s.name}')">
+      <div class="card-head">
+        <div class="card-icon">${icon(s.name)}</div>
+        <div class="card-name">${s.name}</div>
+        <div class="card-dot ${s.status==='cached'?'dot-ok':'dot-fail'}"></div>
+        <label class="toggle" onclick="event.stopPropagation()" title="${s.disabled?'Disabled':'Enabled'}">
+          <input type="checkbox" ${s.disabled?'':'checked'} onchange="toggleServer('${s.name}',this.checked)">
+          <div class="toggle-track"></div>
+          <div class="toggle-knob"></div>
+        </label>
+      </div>
+      <div class="card-meta"><span>${s.tools} tools</span></div>
+      <div class="card-cat">${cat(s.name)}</div>
+    </div>`).join('');
+}
+function renderTools(){
+  const q=(document.getElementById('tool-search').value||'').toLowerCase();
+  let tools=[];
+  servers.forEach(s=>(s.toolNames||[]).forEach(t=>tools.push({name:t,server:s.name,desc:''})));
+  if(q)tools=tools.filter(t=>t.name.toLowerCase().includes(q)||t.server.toLowerCase().includes(q));
+  document.getElementById('tool-list').innerHTML=tools.slice(0,200).map(t=>`
+    <div class="tool-row"><span class="tool-name">${t.name}</span><span class="tool-server">${icon(t.server)} ${t.server}</span></div>`).join('');
+}
+
+function parseJsonInput(raw){
+  raw=raw.trim();
+  if(!raw)throw new Error('Empty input');
+  let parsed;
+  try{parsed=JSON.parse(raw)}catch(e){throw new Error('Invalid JSON: '+e.message)}
+  if(parsed.mcpServers&&typeof parsed.mcpServers==='object')parsed=parsed.mcpServers;
+  else if(parsed.servers&&typeof parsed.servers==='object'&&!Array.isArray(parsed.servers))parsed=parsed.servers;
+  const results={};
+  for(const[name,cfg] of Object.entries(parsed)){
+    if(typeof cfg!=='object'||!cfg.command)throw new Error(`"${name}" needs a "command" field`);
+    results[name]={command:cfg.command,args:cfg.args||[],env:cfg.env||{}};
+  }
+  if(!Object.keys(results).length)throw new Error('No servers found in JSON');
+  return results;
+}
+
+function showAddModal(){
+  document.getElementById('add-json').value='';
+  document.getElementById('add-highlight').innerHTML='';
+  document.getElementById('add-json-error').classList.add('hidden');
+  document.getElementById('add-modal').classList.remove('hidden');
+  setTimeout(()=>document.getElementById('add-json').focus(),100);
+}
+function hideAddModal(){document.getElementById('add-modal').classList.add('hidden')}
+async function addServer(){
+  const raw=document.getElementById('add-json').value;
+  const errEl=document.getElementById('add-json-error');
+  errEl.classList.add('hidden');
+  let parsed;
+  try{parsed=parseJsonInput(raw)}catch(e){errEl.textContent=e.message;errEl.classList.remove('hidden');return}
+  let ok=0;
+  for(const[name,cfg] of Object.entries(parsed)){
+    const res=await fetch('/api/servers',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,command:cfg.command,args:cfg.args,env:cfg.env})});
+    if(res.ok)ok++;
+  }
+  const names=Object.keys(parsed);
+  notify(ok===1?names[0]+' added':ok+' servers added');
+  hideAddModal();await fetchServers();
+}
+
+function openEdit(name){
+  const s=servers.find(x=>x.name===name);if(!s)return;
+  editingServerName=name;
+  document.getElementById('edit-title').textContent=icon(s.name)+' '+s.name;
+  const obj={};obj[s.name]={command:s.command,args:s.args||[],env:s.env||{}};
+  const json=JSON.stringify(obj,null,2);
+  document.getElementById('edit-json').value=json;
+  syncHighlight('edit');
+  document.getElementById('edit-json-error').classList.add('hidden');
+  const ib=document.getElementById('edit-info-box');
+  if(s.status==='cached'){
+    ib.innerHTML=`<div class="info-box info-ok"><div class="info-title">${s.tools} Tools Cached</div><div class="info-desc">${(s.toolNames||[]).slice(0,5).join(', ')}${s.toolNames&&s.toolNames.length>5?'...':''}</div></div>`;
+  }else{
+    ib.innerHTML='<div class="info-box info-fail"><div class="info-title">Not Cached</div><div class="info-desc">Run Rebuild Cache to index</div></div>';
+  }
+  document.getElementById('edit-modal').classList.remove('hidden');
+}
+function hideEditModal(){document.getElementById('edit-modal').classList.add('hidden');editingServerName=null}
+async function updateServer(){
+  if(!editingServerName)return;
+  const raw=document.getElementById('edit-json').value;
+  const errEl=document.getElementById('edit-json-error');
+  errEl.classList.add('hidden');
+  let parsed;
+  try{parsed=parseJsonInput(raw)}catch(e){errEl.textContent=e.message;errEl.classList.remove('hidden');return}
+  const names=Object.keys(parsed);
+  if(names.length!==1){errEl.textContent='Edit one server at a time';errEl.classList.remove('hidden');return}
+  const newName=names[0];const cfg=parsed[newName];
+  const res=await fetch('/api/servers/'+encodeURIComponent(editingServerName),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({newName,command:cfg.command,args:cfg.args,env:cfg.env})});
+  if(res.ok){notify(newName+' updated');hideEditModal();await fetchServers()}
+}
+
+async function deleteServer(name){
+  const res=await fetch('/api/servers/'+encodeURIComponent(name),{method:'DELETE'});
+  if(res.ok){notify(name+' removed','danger');hideEditModal();await fetchServers()}
+}
+function deleteCurrentServer(){if(editingServerName&&confirm('Delete '+editingServerName+'?'))deleteServer(editingServerName)}
+
+async function toggleServer(name,enabled){
+  const res=await fetch('/api/servers/'+encodeURIComponent(name)+'/toggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({disabled:!enabled})});
+  if(res.ok){notify(name+(enabled?' enabled':' disabled'));await fetchServers()}
+}
+
+async function regenerateCache(){
+  const btn=document.getElementById('rebuild-btn');
+  const btn2=document.getElementById('settings-rebuild');
+  btn.disabled=true;btn.innerHTML='<span class="spinner"></span>Generating...';
+  if(btn2)btn2.disabled=true;
+  const log=document.getElementById('gen-log');
+  log.classList.remove('hidden');
+  log.innerHTML='<div class="gl gl-info">Starting cache generation...</div>';
+  try{
+    const res=await fetch('/api/generate',{method:'POST'});const data=await res.json();
+    let html='';
+    if(data.servers)for(const s of data.servers)html+=`<div class="gl ${s.ok?'gl-ok':'gl-err'}">${s.ok?'✓':'✗'} ${s.name} — ${s.ok?s.tools+' tools':'FAILED'}</div>`;
+    if(data.summary)html+=`<div class="gl gl-info">Done: ${data.summary.ok} OK, ${data.summary.failed} failed, ${data.summary.totalTools} tools</div>`;
+    log.innerHTML=html;notify('Cache regenerated');await fetchServers();
+  }catch(e){log.innerHTML=`<div class="gl gl-err">Error: ${e.message}</div>`}
+  finally{btn.disabled=false;btn.innerHTML='↻ Rebuild Cache';if(btn2)btn2.disabled=false}
+}
+
+async function saveSettings(){
+  const mode=document.getElementById('setting-mode').value;
+  const idleTimeout=parseInt(document.getElementById('setting-timeout').value);
+  await fetch('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode,idleTimeout})});
+  notify('Settings saved');
+}
+
+function dismissWelcome(){
+  document.getElementById('welcome-modal').classList.add('hidden');
+  document.cookie='mcp_welcomed=1;max-age=31536000;path=/';
+}
+function checkWelcome(){
+  if(!document.cookie.includes('mcp_welcomed=1')){
+    document.getElementById('welcome-modal').classList.remove('hidden');
+  }
+}
+
+fetchServers();
+checkWelcome();
+setTimeout(()=>document.body.classList.add('ready'),80);
+</script></body></html>

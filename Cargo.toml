@@ -1,6 +1,6 @@
 [package]
 name = "mcp-on-demand"
-version = "2.0.0"
+version = "3.0.0"
 edition = "2021"
 authors = ["SOFLUTION LTD"]
 description = "Fastest MCP proxy — BM25 tool discovery + lazy-loading + preload. Single binary, zero deps."

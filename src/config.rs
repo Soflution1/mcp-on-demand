@@ -1,4 +1,3 @@
-/// Auto-detect MCP server configurations from Cursor, Claude Desktop, etc.
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
@@ -45,162 +44,121 @@ impl Default for ProxyConfig {
     }
 }
 
-/// Get all known config file paths across platforms.
+fn is_self(name: &str, config: &Value) -> bool {
+    if name == "mcp-on-demand" { return true; }
+    if let Some(cmd) = config.get("command").and_then(|v| v.as_str()) {
+        if cmd.contains("mcp-on-demand") { return true; }
+    }
+    if let Some(args) = config.get("args").and_then(|v| v.as_array()) {
+        if args.iter().any(|a| a.as_str().map(|s| s.contains("mcp-on-demand")).unwrap_or(false)) {
+            return true;
+        }
+    }
+    false
+}
+
+fn parse_servers(json: &Value) -> HashMap<String, ServerConfig> {
+    let mut result = HashMap::new();
+    let servers_obj = json.get("mcpServers").or_else(|| json.get("servers")).unwrap_or(json);
+    let servers = match servers_obj.as_object() { Some(m) => m, None => return result };
+
+    for (name, config) in servers {
+        if name.starts_with('_') { continue; }
+        if is_self(name, config) {
+            eprintln!("[mcp-on-demand][INFO] Skipped self: {}", name);
+            continue;
+        }
+        if config.get("disabled").and_then(|v| v.as_bool()).unwrap_or(false) {
+            eprintln!("[mcp-on-demand][INFO] Skipped disabled: {}", name);
+            continue;
+        }
+        if let Some(cmd) = config.get("command").and_then(|v| v.as_str()) {
+            let args: Vec<String> = config.get("args").and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .unwrap_or_default();
+            let env: HashMap<String, String> = config.get("env").and_then(|v| v.as_object())
+                .map(|obj| obj.iter().filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string()))).collect())
+                .unwrap_or_default();
+            result.insert(name.clone(), ServerConfig { command: cmd.to_string(), args, env });
+        }
+    }
+    result
+}
+
+fn load_dedicated_config() -> Option<ProxyConfig> {
+    let home = dirs::home_dir()?;
+    let path = home.join(".mcp-on-demand").join("config.json");
+    if !path.exists() { return None; }
+    let content = fs::read_to_string(&path).ok()?;
+    let json: Value = serde_json::from_str(&content).ok()?;
+    let servers = parse_servers(&json);
+    if servers.is_empty() { return None; }
+    eprintln!("[mcp-on-demand][INFO] Loaded {} servers from {}", servers.len(), path.display());
+
+    let mut config = ProxyConfig { servers, ..Default::default() };
+    if let Some(settings) = json.get("settings") {
+        if let Some(mode) = settings.get("mode").and_then(|v| v.as_str()) {
+            config.mode = match mode { "passthrough" => Mode::Passthrough, _ => Mode::Discover };
+        }
+        if let Some(timeout) = settings.get("idleTimeout").and_then(|v| v.as_u64()) {
+            config.idle_timeout_ms = timeout * 1000;
+        }
+    }
+    Some(config)
+}
+
 fn get_config_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
-
     if let Some(home) = dirs::home_dir() {
-        // Cursor IDE
         paths.push(home.join(".cursor").join("mcp.json"));
-
-        // Claude Desktop
         if cfg!(target_os = "macos") {
             if let Some(support) = dirs::data_dir() {
                 paths.push(support.join("Claude").join("claude_desktop_config.json"));
             }
-            // Also try explicit path
-            paths.push(
-                home.join("Library")
-                    .join("Application Support")
-                    .join("Claude")
-                    .join("claude_desktop_config.json"),
-            );
-        } else if cfg!(target_os = "windows") {
-            if let Some(appdata) = dirs::config_dir() {
-                paths.push(appdata.join("Claude").join("claude_desktop_config.json"));
-            }
-        } else {
-            paths.push(
-                home.join(".config")
-                    .join("claude")
-                    .join("claude_desktop_config.json"),
-            );
+            paths.push(home.join("Library").join("Application Support").join("Claude").join("claude_desktop_config.json"));
         }
-
-        // Windsurf
         paths.push(home.join(".codeium").join("windsurf").join("mcp_config.json"));
-
-        // VS Code
         paths.push(home.join(".vscode").join("mcp.json"));
     }
-
     paths
 }
 
-/// Parse a single config file and extract server definitions.
-fn parse_config_file(path: &PathBuf) -> HashMap<String, ServerConfig> {
-    let mut result = HashMap::new();
+pub fn auto_detect() -> ProxyConfig {
+    if let Some(config) = load_dedicated_config() {
+        let mode_str = match config.mode { Mode::Discover => "discover", Mode::Passthrough => "passthrough" };
+        eprintln!("[mcp-on-demand][INFO] Using dedicated config: {} servers, mode={}", config.servers.len(), mode_str);
+        return apply_env_overrides(config);
+    }
 
-    let content = match fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(_) => return result,
-    };
-
-    let json: Value = match serde_json::from_str(&content) {
-        Ok(v) => v,
-        Err(_) => return result,
-    };
-
-    // Handle both { "mcpServers": {...} } and { "servers": {...} } formats
-    let servers_obj = json
-        .get("mcpServers")
-        .or_else(|| json.get("servers"))
-        .unwrap_or(&json);
-
-    let servers = match servers_obj.as_object() {
-        Some(m) => m,
-        None => return result,
-    };
-
-    for (name, config) in servers {
-        // Skip disabled servers (underscore prefix)
-        if name.starts_with('_') {
-            continue;
-        }
-
-        // Skip our own proxy entry
-        if let Some(cmd) = config.get("command").and_then(|v| v.as_str()) {
-            if let Some(args) = config.get("args").and_then(|v| v.as_array()) {
-                let is_self = args.iter().any(|a| {
-                    a.as_str()
-                        .map(|s| s.contains("mcp-on-demand"))
-                        .unwrap_or(false)
-                });
-                if is_self {
-                    continue;
+    let mut config = ProxyConfig::default();
+    for path in &get_config_paths() {
+        if path.exists() {
+            if let Ok(content) = fs::read_to_string(path) {
+                if let Ok(json) = serde_json::from_str::<Value>(&content) {
+                    let servers = parse_servers(&json);
+                    if !servers.is_empty() {
+                        eprintln!("[mcp-on-demand][INFO] Found {} servers in {}", servers.len(), path.display());
+                        config.servers.extend(servers);
+                    }
                 }
             }
-
-            let args: Vec<String> = config
-                .get("args")
-                .and_then(|v| v.as_array())
-                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-                .unwrap_or_default();
-
-            let env: HashMap<String, String> = config
-                .get("env")
-                .and_then(|v| v.as_object())
-                .map(|obj| {
-                    obj.iter()
-                        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                        .collect()
-                })
-                .unwrap_or_default();
-
-            result.insert(
-                name.clone(),
-                ServerConfig {
-                    command: cmd.to_string(),
-                    args,
-                    env,
-                },
-            );
         }
     }
 
-    result
+    if config.servers.is_empty() {
+        eprintln!("[mcp-on-demand][WARN] No MCP servers found.");
+    } else {
+        eprintln!("[mcp-on-demand][INFO] Total: {} servers detected", config.servers.len());
+    }
+    apply_env_overrides(config)
 }
 
-/// Auto-detect all MCP servers from known config files.
-pub fn auto_detect() -> ProxyConfig {
-    let mut config = ProxyConfig::default();
-    let paths = get_config_paths();
-
-    for path in &paths {
-        if path.exists() {
-            let servers = parse_config_file(path);
-            if !servers.is_empty() {
-                eprintln!(
-                    "[mcp-on-demand][INFO] Found {} servers in {}",
-                    servers.len(),
-                    path.display()
-                );
-                config.servers.extend(servers);
-            }
-        }
-    }
-
-    let total = config.servers.len();
-    if total == 0 {
-        eprintln!("[mcp-on-demand][WARN] No MCP servers found. Add servers to ~/.cursor/mcp.json");
-    } else {
-        eprintln!("[mcp-on-demand][INFO] Total: {} MCP servers detected", total);
-    }
-
-    // Override from env
+fn apply_env_overrides(mut config: ProxyConfig) -> ProxyConfig {
     if let Ok(mode) = std::env::var("MCP_ON_DEMAND_MODE") {
-        config.mode = match mode.as_str() {
-            "passthrough" => Mode::Passthrough,
-            _ => Mode::Discover,
-        };
+        config.mode = match mode.as_str() { "passthrough" => Mode::Passthrough, _ => Mode::Discover };
     }
-
     if let Ok(preload) = std::env::var("MCP_ON_DEMAND_PRELOAD") {
-        config.preload = match preload.as_str() {
-            "none" => Preload::None,
-            _ => Preload::All,
-        };
+        config.preload = match preload.as_str() { "none" => Preload::None, _ => Preload::All };
     }
-
     config
 }

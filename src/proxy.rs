@@ -31,16 +31,27 @@ impl ProxyServer {
     }
 
     pub async fn run(&self) {
-        // 1. Preload servers in background
-        if self.config.preload != Preload::None {
-            let manager = self.child_manager.clone();
-            let engine = self.search_engine.clone();
-            let delay = self.config.preload_delay_ms;
-            let names = self.servers_to_preload();
-
-            tokio::spawn(async move {
-                preload_servers(manager, engine, names, delay).await;
-            });
+        // 1. Load cache synchronously FIRST (instant, <1ms)
+        if let Some(cached) = crate::cache::load_cache() {
+            let mut all_tools: Vec<IndexedTool> = Vec::new();
+            for (server_name, tools) in &cached.servers {
+                for tool in tools {
+                    all_tools.push(IndexedTool {
+                        name: format!("{}__{}", server_name, tool.name),
+                        original_name: tool.name.clone(),
+                        server_name: server_name.to_string(),
+                        description: tool.description.clone(),
+                        tool_def: tool.clone(),
+                    });
+                }
+            }
+            if !all_tools.is_empty() {
+                let mut eng = self.search_engine.lock().await;
+                eng.build_index(all_tools);
+                eprintln!("[mcp-on-demand][INFO] Ready: {} tools from cache", eng.tool_count());
+            }
+        } else {
+            eprintln!("[mcp-on-demand][WARN] No cache found. Run 'mcp-on-demand generate' for instant startup.");
         }
 
         // 2. Start idle reaper
@@ -52,7 +63,7 @@ impl ProxyServer {
             }
         });
 
-        // 3. Main stdio loop
+        // 3. Main stdio loop (index already populated)
         self.stdio_loop().await;
     }
 
@@ -152,7 +163,7 @@ impl ProxyServer {
         serde_json::json!([
             {
                 "name": "discover",
-                "description": "Search for available MCP tools across all servers using natural language. Returns matching tools with their full schemas. Always call this FIRST to find the right tool before calling execute.",
+                "description": "Search for available MCP tools across all servers using natural language. Returns matching tools with their full schemas, plus the complete list of available servers. Always call this FIRST to find the right tool before calling execute.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -162,8 +173,8 @@ impl ProxyServer {
                         },
                         "top_k": {
                             "type": "number",
-                            "description": "Max results to return (default: 5, max: 20)",
-                            "default": 5
+                            "description": "Max results to return (default: 10, max: 50)",
+                            "default": 10
                         }
                     },
                     "required": ["query"]
@@ -250,44 +261,88 @@ impl ProxyServer {
         id: Option<serde_json::Value>,
         args: serde_json::Value,
     ) -> JsonRpcResponse {
-        let query = args
-            .get("query")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let top_k = args
-            .get("top_k")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(5)
-            .min(20) as usize;
+        let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+        let top_k = args.get("top_k").and_then(|v| v.as_u64()).unwrap_or(10).min(50) as usize;
+
+        // Always provide the full server list
+        let mut all_server_names: Vec<String> = self.config.servers.keys().cloned().collect();
+        all_server_names.sort();
 
         let engine = self.search_engine.lock().await;
-        let results = engine.search(query, top_k);
 
-        let tools_json: Vec<serde_json::Value> = results
-            .iter()
-            .map(|t| {
+        if engine.tool_count() > 0 {
+            let results = engine.search(query, top_k);
+
+            // Collect unique servers from results
+            let mut seen_servers: Vec<String> = Vec::new();
+            let tools_json: Vec<serde_json::Value> = results.iter().map(|t| {
+                if !seen_servers.contains(&t.server_name) {
+                    seen_servers.push(t.server_name.clone());
+                }
                 serde_json::json!({
                     "server": t.server_name,
                     "tool": t.original_name,
                     "description": t.description,
                     "inputSchema": t.tool_def.input_schema,
                 })
-            })
-            .collect();
+            }).collect();
+
+            let text = serde_json::to_string_pretty(&serde_json::json!({
+                "query": query,
+                "total_indexed": engine.tool_count(),
+                "total_servers": all_server_names.len(),
+                "available_servers": all_server_names,
+                "results": tools_json,
+            })).unwrap();
+
+            return JsonRpcResponse::success(id, serde_json::json!({
+                "content": [{ "type": "text", "text": text }]
+            }));
+        }
+
+        drop(engine);
+
+        let query_lower = query.to_lowercase();
+        let mut server_names: Vec<String> = self.config.servers.keys().cloned().collect();
+        server_names.sort();
+
+        let mut matches: Vec<serde_json::Value> = Vec::new();
+        for name in &server_names {
+            if query_lower.is_empty()
+                || name.to_lowercase().contains(&query_lower)
+                || query_lower.contains(&name.to_lowercase())
+            {
+                matches.push(serde_json::json!({
+                    "server": name,
+                    "tool": "Use execute with this server name",
+                    "description": format!("MCP server: {}. Call execute with server=\"{}\" and your tool name.", name, name),
+                }));
+            }
+        }
+
+        if matches.is_empty() {
+            for name in &server_names {
+                matches.push(serde_json::json!({
+                    "server": name,
+                    "tool": "Available server",
+                    "description": format!("MCP server: {}", name),
+                }));
+            }
+        }
+
+        let matches: Vec<serde_json::Value> = matches.into_iter().take(top_k).collect();
 
         let text = serde_json::to_string_pretty(&serde_json::json!({
             "query": query,
-            "total_indexed": engine.tool_count(),
-            "results": tools_json,
-        }))
-        .unwrap();
+            "total_indexed": 0,
+            "note": "Servers loading in background. Results based on server names. Use execute to call tools.",
+            "available_servers": server_names,
+            "results": matches,
+        })).unwrap();
 
-        JsonRpcResponse::success(
-            id,
-            serde_json::json!({
-                "content": [{ "type": "text", "text": text }]
-            }),
-        )
+        JsonRpcResponse::success(id, serde_json::json!({
+            "content": [{ "type": "text", "text": text }]
+        }))
     }
 
     async fn handle_execute(

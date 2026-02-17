@@ -1,117 +1,133 @@
-# mcp-on-demand v2.0 (Rust)
+# MCP on Demand
 
-**Fastest MCP proxy — BM25 tool discovery, lazy-loading, single binary.**
+**One proxy to rule all your MCP servers.**
 
-Exposes only 2 tools (`discover` + `execute`) to your LLM instead of 200+.
-Sub-microsecond search. ~99% context token savings. Zero external dependencies.
+Replace 20+ MCP server entries in Cursor with a single intelligent proxy.
+Built-in web dashboard. ~99% context token savings. Zero dependencies.
 
-## Why Rust?
-
-| | TypeScript | **Rust** |
-|---|---|---|
-| Binary | 150MB (node_modules) | **~4MB** |
-| Startup | ~150ms | **~5ms** |
-| Runtime dep | Node.js 18+ | **None** |
-| BM25 search | ~0.1ms | **~0.01ms** |
-| Distribution | npm install | **Single binary** |
-
-## Architecture
-
-```
-Cursor / Claude Desktop / VS Code (sees 2 tools)
-    ↓ stdio (JSON-RPC)
-mcp-on-demand (single Rust binary)
-  ├─ BM25 Search Index (in-memory, <0.01ms)
-  └─ Child Manager (spawn / pool / idle-stop)
-    ↓ stdio (JSON-RPC)
-Your MCP servers (github, supabase, filesystem...)
-```
-
-## Install
-
-### One-line install (no Rust needed)
+## Install (30 seconds)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Soflution1/mcp-on-demand/main/install.sh | bash
 ```
 
-Downloads a pre-built binary (~4MB) for your platform. No dependencies.
+That's it. The installer will:
+1. Download a single binary (~800KB)
+2. Auto-detect your Cursor MCP servers
+3. Import them all into mcp-on-demand
+4. Replace your Cursor config with one entry
+5. Generate the tool cache
+6. Open the dashboard
 
-### From source (requires Rust 1.80+)
+**Restart Cursor** and you're done.
+
+### From source
 
 ```bash
 git clone https://github.com/Soflution1/mcp-on-demand.git
-cd mcp-on-demand
-cargo build --release
+cd mcp-on-demand && cargo build --release
 cp target/release/mcp-on-demand ~/.local/bin/
+mcp-on-demand dashboard
 ```
 
-## Configure
+## Dashboard
 
-### Cursor IDE (`~/.cursor/mcp.json`)
+Open `http://127.0.0.1:24680` or run:
 
-```json
-{
-  "mcpServers": {
-    "on-demand": {
-      "command": "/path/to/mcp-on-demand"
-    }
-  }
-}
+```bash
+mcp-on-demand dashboard
 ```
 
-### Claude Desktop
+The dashboard lets you:
+- **Add servers** by pasting JSON from any MCP server README
+- **Edit servers** with syntax-highlighted JSON (tokens/secrets highlighted in red)
+- **Enable/disable** servers with a toggle (like Cursor's native UI)
+- **Rebuild cache** in one click
+- **Monitor** token savings, cached vs failed servers
 
-```json
-{
-  "mcpServers": {
-    "on-demand": {
-      "command": "/path/to/mcp-on-demand"
-    }
-  }
-}
-```
+Supports Cursor JSON format, `mcpServers` wrapper, and bulk import.
 
-That's it. No args needed — it auto-detects your other MCP servers from config files.
+> **Bookmark `http://127.0.0.1:24680`** for quick access.
 
 ## How It Works
 
-### Discover Mode (default)
+**Before:** Cursor loads 20+ MCP servers = 200+ tool definitions = ~20,000 tokens per request.
 
-Your LLM sees only 2 tools:
+**After:** Cursor loads 1 proxy = 2 tools = ~160 tokens. Savings: **99%**.
 
-1. **`discover(query)`** — BM25 search across all tools from all servers
-2. **`execute(server, tool, arguments)`** — Run any tool on any server
-
-Flow:
 ```
-LLM: "I need to read a file"
-  → calls discover("read file")
-  → gets: [{server: "filesystem", tool: "read_file", schema: {...}}]
-  → calls execute("filesystem", "read_file", {path: "/foo"})
-  → gets file content
+Cursor (sees only 2 tools: discover + execute)
+    |
+mcp-on-demand (BM25 search index, <0.01ms)
+    |
+Your MCP servers (spawned on demand, killed when idle)
 ```
 
-### Passthrough Mode
+### Discover mode (default)
 
-All tools exposed directly with `server__tool` prefix (legacy mode).
+1. LLM calls `discover("send email")` 
+2. Proxy searches across all 200+ tools using BM25
+3. Returns matching tools with full schemas + complete server list
+4. LLM calls `execute("resend", "send-email", {to: "...", ...})`
+5. Proxy spawns the server (if not running), calls the tool, returns result
+
+### Passthrough mode
+
+All tools exposed directly with `server__tool` prefix. Full visibility, higher token cost.
+
+## CLI
 
 ```bash
-MCP_ON_DEMAND_MODE=passthrough mcp-on-demand
+mcp-on-demand                  # Start proxy (stdio, used by Cursor)
+mcp-on-demand dashboard        # Open web dashboard
+mcp-on-demand generate         # Rebuild tool cache
+mcp-on-demand status           # Show detected servers
+mcp-on-demand search "git"     # Test BM25 search
+mcp-on-demand version          # Show version
 ```
 
-## Auto-Detection
+## Configuration
 
-Config files checked (in order):
-- `~/.cursor/mcp.json`
-- `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS)
-- `%APPDATA%/Claude/claude_desktop_config.json` (Windows)
-- `~/.config/claude/claude_desktop_config.json` (Linux)
-- `~/.codeium/windsurf/mcp_config.json`
-- `~/.vscode/mcp.json`
+Config lives in `~/.mcp-on-demand/config.json`:
 
-Servers starting with `_` are skipped (disabled convention).
-Self-references to `mcp-on-demand` are automatically excluded.
+```json
+{
+  "servers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_TOKEN": "ghp_xxx" }
+    }
+  },
+  "settings": {
+    "mode": "discover",
+    "idleTimeout": 300
+  }
+}
+```
+
+Cursor config (`~/.cursor/mcp.json`) just needs:
+
+```json
+{
+  "mcpServers": {
+    "on-demand": {
+      "command": "/path/to/mcp-on-demand"
+    }
+  }
+}
+```
+
+## Performance
+
+| Metric | Value |
+|---|---|
+| Binary size | ~800KB |
+| Startup | <5ms |
+| BM25 search (300 tools) | <0.01ms |
+| Context token savings | ~99% |
+| RAM usage | ~5MB |
+| Runtime dependencies | **None** |
 
 ## Environment Variables
 
@@ -121,37 +137,15 @@ Self-references to `mcp-on-demand` are automatically excluded.
 | `MCP_ON_DEMAND_PRELOAD` | `all` / `none` | `all` |
 | `MCP_ON_DEMAND_DEBUG` | `1` | - |
 
-## CLI
+## Uninstall
 
 ```bash
-mcp-on-demand              # Start proxy (default)
-mcp-on-demand status       # Show detected servers
-mcp-on-demand search "git" # Test BM25 search
-mcp-on-demand version      # Show version
-mcp-on-demand help         # Show help
+rm ~/.local/bin/mcp-on-demand
+rm -rf ~/.mcp-on-demand
+# Restore Cursor config from backup:
+cp ~/.mcp-on-demand/cursor-backup.json ~/.cursor/mcp.json
 ```
-
-## Performance
-
-| Metric | Value |
-|---|---|
-| Proxy startup | ~5ms |
-| BM25 search (200 tools) | <0.01ms |
-| Index build (200 tools) | <0.5ms |
-| Tool execution overhead | <2ms |
-| Binary size (stripped) | ~4MB |
-| RAM usage | ~5MB |
-| Context token savings | ~99% |
-
-## Dependencies
-
-Production binary: **zero runtime dependencies**.
-
-Build only:
-- `tokio` — async runtime
-- `serde` / `serde_json` — JSON parsing
-- `dirs` — cross-platform home directory detection
 
 ## License
 
-MIT — SOFLUTION LTD
+MIT - [SOFLUTION LTD](https://soflution.com)

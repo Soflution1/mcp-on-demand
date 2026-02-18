@@ -1,9 +1,20 @@
-# McpHub
+<p align="center">
+  <img src="static/banner.svg" alt="McpHub" width="900"/>
+</p>
 
-**One proxy to rule all your MCP servers.**
+<p align="center">
+  <strong>One proxy to rule all your MCP servers.</strong><br>
+  <sub>Built-in web dashboard · ~99% context token savings · Zero dependencies</sub>
+</p>
 
-Replace 20+ MCP server entries in Cursor with a single intelligent proxy.
-Built-in web dashboard. ~99% context token savings. Zero dependencies.
+<p align="center">
+  <a href="#install"><img src="https://img.shields.io/badge/install-30s-brightgreen" alt="Install"/></a>
+  <img src="https://img.shields.io/badge/language-Rust-orange" alt="Rust"/>
+  <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT"/>
+  <img src="https://img.shields.io/badge/binary-~900KB-yellow" alt="Binary size"/>
+</p>
+
+---
 
 ## Install
 

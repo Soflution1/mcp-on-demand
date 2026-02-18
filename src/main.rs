@@ -16,21 +16,21 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 fn print_help() {
     eprintln!(
         r#"
-mcp-on-demand v{VERSION} — Fastest MCP proxy with BM25 tool discovery
+McpHub v{VERSION} — Fastest MCP proxy with BM25 tool discovery
 
 USAGE:
-  mcp-on-demand              Start proxy (loads from cache, instant)
-  mcp-on-demand generate     Start all servers, index tools, save cache
-  mcp-on-demand dashboard    Open web dashboard on http://127.0.0.1:24680
-  mcp-on-demand status       Show detected servers, cache, and health config
-  mcp-on-demand search "q"   Test BM25 search
-  mcp-on-demand version      Show version
-  mcp-on-demand help         Show this help
+  McpHub              Start proxy (loads from cache, instant)
+  McpHub generate     Start all servers, index tools, save cache
+  McpHub dashboard    Open web dashboard on http://127.0.0.1:24680
+  McpHub status       Show detected servers, cache, and health config
+  McpHub search "q"   Test BM25 search
+  McpHub version      Show version
+  McpHub help         Show this help
 
 HEALTH MONITORING (v3.1):
   Built-in health checks with native OS notifications (macOS/Windows/Linux).
   If a server crashes, you get a desktop notification + auto-restart.
-  Configure in ~/.mcp-on-demand/config.json:
+  Configure in ~/.McpHub/config.json:
     "settings": {{
       "health": {{
         "checkInterval": 30,   // seconds between checks
@@ -40,8 +40,8 @@ HEALTH MONITORING (v3.1):
     }}
 
 FIRST TIME SETUP:
-  1. Configure servers in ~/.mcp-on-demand/config.json
-  2. Run: mcp-on-demand generate    (one-time, ~60s)
+  1. Configure servers in ~/.McpHub/config.json
+  2. Run: McpHub generate    (one-time, ~60s)
   3. Add to Cursor mcp.json
   4. Every startup is instant (<1ms from cache)
 "#,
@@ -51,7 +51,7 @@ FIRST TIME SETUP:
 
 fn cmd_status() {
     let config = auto_detect();
-    println!("mcp-on-demand v{}", VERSION);
+    println!("McpHub v{}", VERSION);
     println!("Mode: {:?}", config.mode);
     println!("Servers configured: {}", config.servers.len());
     println!("Health: check={}s, auto_restart={}, notifications={}",
@@ -65,7 +65,7 @@ fn cmd_status() {
         let total_tools: usize = cached.servers.values().map(|v: &Vec<crate::protocol::ToolDef>| v.len()).sum::<usize>();
         println!("Cache: {} servers, {} tools (v{})", cached.servers.len(), total_tools, cached.version);
     } else {
-        println!("Cache: NOT FOUND — run 'mcp-on-demand generate' first");
+        println!("Cache: NOT FOUND — run 'McpHub generate' first");
     }
 
     println!();
@@ -81,7 +81,7 @@ fn cmd_status() {
 async fn cmd_generate() {
     let config = auto_detect();
     if config.servers.is_empty() {
-        eprintln!("No servers found. Add servers to ~/.mcp-on-demand/config.json");
+        eprintln!("No servers found. Add servers to ~/.McpHub/config.json");
         return;
     }
 
@@ -137,7 +137,7 @@ async fn cmd_generate() {
 
     eprintln!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     eprintln!("Done: {} OK, {} failed, {} total tools", ok, fail, engine.tool_count());
-    eprintln!("Cache saved to ~/.mcp-on-demand/schema-cache.json");
+    eprintln!("Cache saved to ~/.McpHub/schema-cache.json");
     eprintln!("Proxy will now start instantly from cache.");
 }
 
@@ -163,7 +163,7 @@ fn cmd_search(query: &str) {
             println!("  {}. {} (server: {}) — {}", i + 1, t.original_name, t.server_name, &t.description[..t.description.len().min(80)]);
         }
     } else {
-        println!("No cache found. Run 'mcp-on-demand generate' first.");
+        println!("No cache found. Run 'McpHub generate' first.");
     }
 }
 
@@ -173,7 +173,7 @@ async fn main() {
 
     match args.get(1).map(|s| s.as_str()) {
         Some("help") | Some("--help") | Some("-h") => print_help(),
-        Some("version") | Some("--version") | Some("-V") => println!("mcp-on-demand v{}", VERSION),
+        Some("version") | Some("--version") | Some("-V") => println!("McpHub v{}", VERSION),
         Some("status") => cmd_status(),
         Some("generate") => cmd_generate().await,
         Some("dashboard") | Some("ui") | Some("web") => dashboard::start_dashboard().await,
@@ -182,7 +182,7 @@ async fn main() {
             cmd_search(query);
         }
         _ => {
-            eprintln!("mcp-on-demand v{} — starting...", VERSION);
+            eprintln!("McpHub v{} — starting...", VERSION);
             let config = auto_detect();
             let proxy = ProxyServer::new(config);
             proxy.run().await;

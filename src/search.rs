@@ -102,7 +102,7 @@ impl SearchEngine {
 
         let elapsed = start.elapsed();
         eprintln!(
-            "[mcp-on-demand][INFO] Search index built: {} tools in {:.2}ms",
+            "[McpHub][INFO] Search index built: {} tools in {:.2}ms",
             self.tools.len(),
             elapsed.as_secs_f64() * 1000.0
         );

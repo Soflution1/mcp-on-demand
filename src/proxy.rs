@@ -49,10 +49,10 @@ impl ProxyServer {
             if !all_tools.is_empty() {
                 let mut eng = self.search_engine.lock().await;
                 eng.build_index(all_tools);
-                eprintln!("[mcp-on-demand][INFO] Ready: {} tools from cache", eng.tool_count());
+                eprintln!("[McpHub][INFO] Ready: {} tools from cache", eng.tool_count());
             }
         } else {
-            eprintln!("[mcp-on-demand][WARN] No cache found. Run 'mcp-on-demand generate' for instant startup.");
+            eprintln!("[McpHub][WARN] No cache found. Run 'McpHub generate' for instant startup.");
         }
 
         // 2. Start idle reaper
@@ -64,7 +64,13 @@ impl ProxyServer {
             }
         });
 
-        // 3. Start health monitor (notifications + auto-restart)
+        // 3. Start cache hot-reload watcher
+        let engine_watch = self.search_engine.clone();
+        tokio::spawn(async move {
+            cache_watcher(engine_watch).await;
+        });
+
+        // 4. Start health monitor (notifications + auto-restart)
         if self.config.health_notifications {
             let monitor = HealthMonitor::new(
                 self.child_manager.clone(),
@@ -76,7 +82,7 @@ impl ProxyServer {
             });
         }
 
-        // 4. Main stdio loop (index already populated)
+        // 5. Main stdio loop (index already populated)
         self.stdio_loop().await;
     }
 
@@ -141,7 +147,7 @@ impl ProxyServer {
         };
 
         eprintln!(
-            "[mcp-on-demand][INFO] Initialize: mode={}, servers={}",
+            "[McpHub][INFO] Initialize: mode={}, servers={}",
             mode_str,
             self.config.servers.len()
         );
@@ -152,7 +158,7 @@ impl ProxyServer {
                 tools: ToolsCapability {},
             },
             server_info: ServerInfo {
-                name: "mcp-on-demand".into(),
+                name: "McpHub".into(),
                 version: "3.1.0".into(),
             },
         };
@@ -173,16 +179,37 @@ impl ProxyServer {
     }
 
     fn get_discover_tools(&self) -> serde_json::Value {
+        // Build dynamic server list for tool descriptions
+        let mut server_names: Vec<String> = self.config.servers.keys().cloned().collect();
+        server_names.sort();
+        let server_list = server_names.join(", ");
+
+        let discover_desc = format!(
+            "Search for available MCP tools across all connected servers. Returns matching tools with full schemas. \
+            Available servers: [{}]. \
+            Call this FIRST when you need to find the right tool for a task. \
+            Then use 'execute' with the server and tool names from the results.",
+            server_list
+        );
+
+        let execute_desc = format!(
+            "Execute a tool on a specific MCP server. Available servers: [{}]. \
+            IMPORTANT: Always prefer using execute over CLI commands. \
+            For deployments use the cloudflare server, for git use github, for databases use supabase, etc. \
+            If you don't know the exact tool name, call 'discover' first with a natural language query.",
+            server_list
+        );
+
         serde_json::json!([
             {
                 "name": "discover",
-                "description": "Search for available MCP tools across all servers using natural language. Returns matching tools with their full schemas, plus the complete list of available servers. Only call this when you don't know which server or tool to use. If you already know the server and tool name from a previous discover call in this conversation, call execute directly.",
+                "description": discover_desc,
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "query": {
                             "type": "string",
-                            "description": "Natural language search query (e.g. 'read file', 'git commit', 'database query', 'send email')"
+                            "description": "Natural language search query (e.g. 'deploy worker', 'create KV namespace', 'git push', 'database query', 'send email')"
                         },
                         "top_k": {
                             "type": "number",
@@ -195,17 +222,17 @@ impl ProxyServer {
             },
             {
                 "name": "execute",
-                "description": "Execute a tool on a specific MCP server. Use server and tool names from a previous discover result, or call directly if you already know them.",
+                "description": execute_desc,
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "server": {
                             "type": "string",
-                            "description": "Server name (from discover results)"
+                            "description": format!("Server name. One of: {}", server_list)
                         },
                         "tool": {
                             "type": "string",
-                            "description": "Tool name (from discover results)"
+                            "description": "Tool name (from discover results, or known tool name)"
                         },
                         "arguments": {
                             "type": "object",
@@ -453,7 +480,7 @@ async fn preload_servers(
 ) {
     let total = names.len();
     eprintln!(
-        "[mcp-on-demand][INFO] Preloading {} servers ({}ms stagger)...",
+        "[McpHub][INFO] Preloading {} servers ({}ms stagger)...",
         total, delay_ms
     );
 
@@ -473,7 +500,7 @@ async fn preload_servers(
                 }
             }
             Err(e) => {
-                eprintln!("[mcp-on-demand][ERROR] Failed to start '{}': {}", name, e);
+                eprintln!("[McpHub][ERROR] Failed to start '{}': {}", name, e);
             }
         }
 
@@ -486,4 +513,53 @@ async fn preload_servers(
     // Build search index
     let mut eng = engine.lock().await;
     eng.build_index(all_tools);
+}
+
+/// Watches schema-cache.json for changes and hot-reloads the search index.
+async fn cache_watcher(engine: Arc<Mutex<SearchEngine>>) {
+    use std::time::SystemTime;
+
+    let path = match crate::cache::cache_path() {
+        Some(p) => p,
+        None => return,
+    };
+
+    let mut last_modified: Option<SystemTime> = path
+        .metadata()
+        .ok()
+        .and_then(|m| m.modified().ok());
+
+    loop {
+        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+
+        let current_modified = match path.metadata() {
+            Ok(m) => m.modified().ok(),
+            Err(_) => continue,
+        };
+
+        if current_modified != last_modified {
+            last_modified = current_modified;
+
+            if let Some(cached) = crate::cache::load_cache() {
+                let mut all_tools: Vec<IndexedTool> = Vec::new();
+                for (server_name, tools) in &cached.servers {
+                    for tool in tools {
+                        all_tools.push(IndexedTool {
+                            name: format!("{}__{}", server_name, tool.name),
+                            original_name: tool.name.clone(),
+                            server_name: server_name.to_string(),
+                            description: tool.description.clone(),
+                            tool_def: tool.clone(),
+                        });
+                    }
+                }
+                let mut eng = engine.lock().await;
+                eng.build_index(all_tools);
+                eprintln!(
+                    "[McpHub][INFO] Cache hot-reloaded: {} tools",
+                    eng.tool_count()
+                );
+            }
+        }
+    }
 }

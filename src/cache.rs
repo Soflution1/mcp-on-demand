@@ -10,9 +10,9 @@ pub struct SchemaCache {
     pub servers: HashMap<String, Vec<ToolDef>>,
 }
 
-fn cache_path() -> Option<PathBuf> {
+pub fn cache_path() -> Option<PathBuf> {
     let home = dirs::home_dir()?;
-    Some(home.join(".mcp-on-demand").join("schema-cache.json"))
+    Some(home.join(".McpHub").join("schema-cache.json"))
 }
 
 pub fn load_cache() -> Option<SchemaCache> {
@@ -21,7 +21,7 @@ pub fn load_cache() -> Option<SchemaCache> {
     let content = fs::read_to_string(&path).ok()?;
     let cache: SchemaCache = serde_json::from_str(&content).ok()?;
     let total_tools: usize = cache.servers.values().map(|v| v.len()).sum();
-    eprintln!("[mcp-on-demand][INFO] Loaded cache: {} servers, {} tools", cache.servers.len(), total_tools);
+    eprintln!("[McpHub][INFO] Loaded cache: {} servers, {} tools", cache.servers.len(), total_tools);
     Some(cache)
 }
 
@@ -37,7 +37,7 @@ pub fn save_cache(servers: &HashMap<String, Vec<ToolDef>>) {
         if let Ok(json) = serde_json::to_string_pretty(&cache) {
             let _ = fs::write(&path, json);
             let total_tools: usize = servers.values().map(|v| v.len()).sum();
-            eprintln!("[mcp-on-demand][INFO] Saved cache: {} servers, {} tools", servers.len(), total_tools);
+            eprintln!("[McpHub][INFO] Saved cache: {} servers, {} tools", servers.len(), total_tools);
         }
     }
 }

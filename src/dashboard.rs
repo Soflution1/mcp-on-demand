@@ -1,4 +1,4 @@
-//! Embedded web dashboard for mcp-on-demand.
+//! Embedded web dashboard for McpHub.
 //! Serves HTML + JSON API on http://127.0.0.1:24680
 //! Zero external dependencies — uses tokio::net::TcpListener directly.
 
@@ -12,7 +12,7 @@ use tokio::net::TcpListener;
 // ─── Config I/O ──────────────────────────────────────────────
 
 fn config_dir() -> PathBuf {
-    dirs::home_dir().unwrap_or_default().join(".mcp-on-demand")
+    dirs::home_dir().unwrap_or_default().join(".McpHub")
 }
 
 fn config_path() -> PathBuf {
@@ -27,10 +27,10 @@ fn binary_path() -> PathBuf {
     std::env::current_exe().unwrap_or_else(|_| {
         dirs::home_dir()
             .unwrap_or_default()
-            .join("mcp-on-demand")
+            .join("McpHub")
             .join("target")
             .join("release")
-            .join("mcp-on-demand")
+            .join("McpHub")
     })
 }
 

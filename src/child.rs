@@ -36,8 +36,37 @@ impl ChildManager {
         }
     }
 
+    /// Resolve a server name case-insensitively.
+    /// Matches exact first, then case-insensitive, then kebab/snake normalization.
+    fn resolve_name(&self, name: &str) -> Option<String> {
+        // 1. Exact match
+        if self.configs.contains_key(name) {
+            return Some(name.to_string());
+        }
+        // 2. Case-insensitive match
+        let lower = name.to_lowercase();
+        for key in self.configs.keys() {
+            if key.to_lowercase() == lower {
+                return Some(key.clone());
+            }
+        }
+        // 3. Normalize: strip hyphens/underscores, compare lowercase
+        let normalized = lower.replace(['-', '_'], "");
+        for key in self.configs.keys() {
+            let key_normalized = key.to_lowercase().replace(['-', '_'], "");
+            if key_normalized == normalized {
+                return Some(key.clone());
+            }
+        }
+        None
+    }
+
     /// Start a server by name. Returns its tools list.
     pub async fn start_server(&self, name: &str) -> Result<Vec<ToolDef>, String> {
+        let name = self.resolve_name(name)
+            .ok_or_else(|| format!("Unknown server: {}", name))?;
+        let name = name.as_str();
+
         // Already running?
         {
             let mut children = self.children.lock().await;
@@ -54,7 +83,7 @@ impl ChildManager {
             .clone();
 
         let start = Instant::now();
-        eprintln!("[mcp-on-demand][INFO] Starting server: {}", name);
+        eprintln!("[McpHub][INFO] Starting server: {}", name);
 
         let mut cmd = Command::new(&config.command);
         cmd.args(&config.args)
@@ -92,7 +121,7 @@ impl ChildManager {
             serde_json::json!({
                 "protocolVersion": "2024-11-05",
                 "capabilities": {},
-                "clientInfo": { "name": "mcp-on-demand", "version": "2.0.0" }
+                "clientInfo": { "name": "McpHub", "version": "2.0.0" }
             }),
         )
         .await?;
@@ -111,7 +140,7 @@ impl ChildManager {
 
         let elapsed = start.elapsed();
         eprintln!(
-            "[mcp-on-demand][INFO] Server '{}' ready: {} tools in {:.0}ms",
+            "[McpHub][INFO] Server '{}' ready: {} tools in {:.0}ms",
             name,
             tools.len(),
             elapsed.as_secs_f64() * 1000.0
@@ -132,6 +161,10 @@ impl ChildManager {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<serde_json::Value, String> {
+        let resolved = self.resolve_name(server_name)
+            .ok_or_else(|| format!("Unknown server: {}", server_name))?;
+        let server_name = resolved.as_str();
+
         // Auto-start if needed
         if !self.is_running(server_name).await {
             self.start_server(server_name).await?;
@@ -168,7 +201,7 @@ impl ChildManager {
         let mut children = self.children.lock().await;
         if let Some(mut proc) = children.remove(name) {
             let _ = proc.child.kill().await;
-            eprintln!("[mcp-on-demand][INFO] Stopped server: {}", name);
+            eprintln!("[McpHub][INFO] Stopped server: {}", name);
         }
     }
 
@@ -177,7 +210,7 @@ impl ChildManager {
         let mut children = self.children.lock().await;
         for (name, mut proc) in children.drain() {
             let _ = proc.child.kill().await;
-            eprintln!("[mcp-on-demand][INFO] Stopped server: {}", name);
+            eprintln!("[McpHub][INFO] Stopped server: {}", name);
         }
     }
 
@@ -200,7 +233,7 @@ impl ChildManager {
         for name in idle_servers {
             if let Some(mut proc) = children.remove(&name) {
                 let _ = proc.child.kill().await;
-                eprintln!("[mcp-on-demand][INFO] Idle-stopped server: {}", name);
+                eprintln!("[McpHub][INFO] Idle-stopped server: {}", name);
             }
         }
     }

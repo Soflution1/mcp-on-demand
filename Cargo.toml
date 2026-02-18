@@ -1,13 +1,17 @@
 [package]
-name = "mcp-on-demand"
+name = "mcp-hub"
 version = "3.1.0"
 edition = "2021"
 authors = ["SOFLUTION LTD"]
 description = "Fastest MCP proxy — BM25 tool discovery + lazy-loading + preload. Single binary, zero deps."
 license = "MIT"
-repository = "https://github.com/Soflution1/mcp-on-demand"
+repository = "https://github.com/Soflution1/McpHub"
 keywords = ["mcp", "cursor", "proxy", "ai", "llm"]
 categories = ["command-line-utilities", "development-tools"]
+
+[[bin]]
+name = "McpHub"
+path = "src/main.rs"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }

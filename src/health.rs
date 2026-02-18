@@ -33,7 +33,7 @@ impl HealthMonitor {
     /// Run the health monitor loop. Call this as a spawned task.
     pub async fn run(&self) {
         eprintln!(
-            "[mcp-on-demand][HEALTH] Monitor started: interval={}s, auto_restart={}",
+            "[McpHub][HEALTH] Monitor started: interval={}s, auto_restart={}",
             self.check_interval.as_secs(),
             self.auto_restart
         );
@@ -53,7 +53,7 @@ impl HealthMonitor {
 
         for (name, reason) in &dead {
             eprintln!(
-                "[mcp-on-demand][HEALTH] Server '{}' is DOWN: {}",
+                "[McpHub][HEALTH] Server '{}' is DOWN: {}",
                 name, reason
             );
 
@@ -71,7 +71,7 @@ impl HealthMonitor {
 
         if *count >= MAX_RESTART_ATTEMPTS {
             eprintln!(
-                "[mcp-on-demand][HEALTH] Server '{}' failed {} restart attempts. Giving up.",
+                "[McpHub][HEALTH] Server '{}' failed {} restart attempts. Giving up.",
                 name, MAX_RESTART_ATTEMPTS
             );
             self.notify_down(name, &format!("{} (failed {} restarts)", reason, count), false);
@@ -85,7 +85,7 @@ impl HealthMonitor {
         // Exponential backoff
         let backoff = Duration::from_millis(RESTART_BACKOFF_BASE_MS * (1 << (attempt - 1)));
         eprintln!(
-            "[mcp-on-demand][HEALTH] Restarting '{}' (attempt {}/{}, backoff {:?})...",
+            "[McpHub][HEALTH] Restarting '{}' (attempt {}/{}, backoff {:?})...",
             name, attempt, MAX_RESTART_ATTEMPTS, backoff
         );
         tokio::time::sleep(backoff).await;
@@ -93,7 +93,7 @@ impl HealthMonitor {
         match self.manager.restart_server(name).await {
             Ok(tool_count) => {
                 eprintln!(
-                    "[mcp-on-demand][HEALTH] Server '{}' restarted OK ({} tools)",
+                    "[McpHub][HEALTH] Server '{}' restarted OK ({} tools)",
                     name, tool_count
                 );
                 self.notify_restarted(name, tool_count);
@@ -103,7 +103,7 @@ impl HealthMonitor {
             }
             Err(e) => {
                 eprintln!(
-                    "[mcp-on-demand][HEALTH] Restart '{}' FAILED: {}",
+                    "[McpHub][HEALTH] Restart '{}' FAILED: {}",
                     name, e
                 );
                 let mut attempts = self.restart_attempts.lock().await;
@@ -133,7 +133,7 @@ impl HealthMonitor {
 /// - Linux: D-Bus / libnotify via notify-rust
 fn send_notification(title: &str, body: &str) {
     // Always log to stderr (visible in Cursor MCP output)
-    eprintln!("[mcp-on-demand][ALERT] {}: {}", title, body);
+    eprintln!("[McpHub][ALERT] {}: {}", title, body);
 
     #[cfg(target_os = "macos")]
     {
@@ -156,7 +156,7 @@ fn send_notification(title: &str, body: &str) {
         let _ = notify_rust::Notification::new()
             .summary(title)
             .body(body)
-            .appname("mcp-on-demand")
+            .appname("McpHub")
             .timeout(notify_rust::Timeout::Milliseconds(10000))
             .show();
     }

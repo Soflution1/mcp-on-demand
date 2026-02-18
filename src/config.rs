@@ -51,12 +51,17 @@ impl Default for ProxyConfig {
 }
 
 fn is_self(name: &str, config: &Value) -> bool {
-    if name == "mcp-on-demand" { return true; }
+    let lower = name.to_lowercase();
+    if lower == "mcphub" || lower == "mcp-hub" || lower == "mcp-on-demand" { return true; }
     if let Some(cmd) = config.get("command").and_then(|v| v.as_str()) {
-        if cmd.contains("mcp-on-demand") { return true; }
+        let cmd_lower = cmd.to_lowercase();
+        if cmd_lower.contains("mcphub") || cmd_lower.contains("mcp-on-demand") { return true; }
     }
     if let Some(args) = config.get("args").and_then(|v| v.as_array()) {
-        if args.iter().any(|a| a.as_str().map(|s| s.contains("mcp-on-demand")).unwrap_or(false)) {
+        if args.iter().any(|a| a.as_str().map(|s| {
+            let s_lower = s.to_lowercase();
+            s_lower.contains("mcphub") || s_lower.contains("mcp-on-demand")
+        }).unwrap_or(false)) {
             return true;
         }
     }
@@ -71,11 +76,11 @@ fn parse_servers(json: &Value) -> HashMap<String, ServerConfig> {
     for (name, config) in servers {
         if name.starts_with('_') { continue; }
         if is_self(name, config) {
-            eprintln!("[mcp-on-demand][INFO] Skipped self: {}", name);
+            eprintln!("[McpHub][INFO] Skipped self: {}", name);
             continue;
         }
         if config.get("disabled").and_then(|v| v.as_bool()).unwrap_or(false) {
-            eprintln!("[mcp-on-demand][INFO] Skipped disabled: {}", name);
+            eprintln!("[McpHub][INFO] Skipped disabled: {}", name);
             continue;
         }
         if let Some(cmd) = config.get("command").and_then(|v| v.as_str()) {
@@ -93,13 +98,13 @@ fn parse_servers(json: &Value) -> HashMap<String, ServerConfig> {
 
 fn load_dedicated_config() -> Option<ProxyConfig> {
     let home = dirs::home_dir()?;
-    let path = home.join(".mcp-on-demand").join("config.json");
+    let path = home.join(".McpHub").join("config.json");
     if !path.exists() { return None; }
     let content = fs::read_to_string(&path).ok()?;
     let json: Value = serde_json::from_str(&content).ok()?;
     let servers = parse_servers(&json);
     if servers.is_empty() { return None; }
-    eprintln!("[mcp-on-demand][INFO] Loaded {} servers from {}", servers.len(), path.display());
+    eprintln!("[McpHub][INFO] Loaded {} servers from {}", servers.len(), path.display());
 
     let mut config = ProxyConfig { servers, ..Default::default() };
     if let Some(settings) = json.get("settings") {
@@ -144,7 +149,7 @@ fn get_config_paths() -> Vec<PathBuf> {
 pub fn auto_detect() -> ProxyConfig {
     if let Some(config) = load_dedicated_config() {
         let mode_str = match config.mode { Mode::Discover => "discover", Mode::Passthrough => "passthrough" };
-        eprintln!("[mcp-on-demand][INFO] Using dedicated config: {} servers, mode={}", config.servers.len(), mode_str);
+        eprintln!("[McpHub][INFO] Using dedicated config: {} servers, mode={}", config.servers.len(), mode_str);
         return apply_env_overrides(config);
     }
 
@@ -155,7 +160,7 @@ pub fn auto_detect() -> ProxyConfig {
                 if let Ok(json) = serde_json::from_str::<Value>(&content) {
                     let servers = parse_servers(&json);
                     if !servers.is_empty() {
-                        eprintln!("[mcp-on-demand][INFO] Found {} servers in {}", servers.len(), path.display());
+                        eprintln!("[McpHub][INFO] Found {} servers in {}", servers.len(), path.display());
                         config.servers.extend(servers);
                     }
                 }
@@ -164,9 +169,9 @@ pub fn auto_detect() -> ProxyConfig {
     }
 
     if config.servers.is_empty() {
-        eprintln!("[mcp-on-demand][WARN] No MCP servers found.");
+        eprintln!("[McpHub][WARN] No MCP servers found.");
     } else {
-        eprintln!("[mcp-on-demand][INFO] Total: {} servers detected", config.servers.len());
+        eprintln!("[McpHub][INFO] Total: {} servers detected", config.servers.len());
     }
     apply_env_overrides(config)
 }

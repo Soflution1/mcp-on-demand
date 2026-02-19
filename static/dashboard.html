@@ -318,7 +318,10 @@ function renderGrid(){
   document.getElementById('search-clear').classList.toggle('hidden',!q);
   const filtered=servers.filter(s=>!q||s.name.toLowerCase().includes(q)||cat(s.name).toLowerCase().includes(q));
   const grid=document.getElementById('server-grid');
-  grid.innerHTML=filtered.map(s=>`
+  grid.innerHTML=filtered.map(s=>{
+    const errText=s.error||'';
+    const shortErr=errText.length>60?errText.slice(0,57)+'...':errText;
+    return `
     <div class="card${s.disabled?' disabled':''}" onclick="openEdit('${s.name}')">
       <div class="card-head">
         <div class="card-icon">${icon(s.name)}</div>
@@ -332,10 +335,11 @@ function renderGrid(){
       </div>
       <div class="card-meta">${s.status==='cached'
         ?`<span>${s.tools} tools</span>`
-        :`<span style="color:var(--danger)">✗ Not cached</span><span style="color:var(--text-dim);font-size:10px">Click to diagnose</span>`
+        :`<span style="color:var(--danger);font-size:11px">${shortErr||'Not cached'}</span>`
       }</div>
+      ${s.status!=='cached'?'<div style="font-size:10px;color:var(--accent);margin-top:4px;cursor:pointer">🔧 Click to diagnose</div>':''}
       <div class="card-cat">${cat(s.name)}</div>
-    </div>`).join('');
+    </div>`}).join('');
 }
 function renderTools(){
   const q=(document.getElementById('tool-search').value||'').toLowerCase();
@@ -403,8 +407,10 @@ function openEdit(name){
     ib.innerHTML=`<div class="info-box info-ok"><div class="info-title">✓ ${s.tools} Tools Cached</div><div class="info-desc">${(s.toolNames||[]).slice(0,8).join(', ')}${s.toolNames&&s.toolNames.length>8?' + '+(s.toolNames.length-8)+' more':''}</div></div>`;
     rb.style.display='none';
   }else{
-    ib.innerHTML=`<div class="info-box info-fail"><div class="info-title">✗ Not Cached</div><div class="info-desc">This server failed during cache generation or hasn't been indexed yet.</div></div>`;
+    ib.innerHTML=`<div class="info-box info-fail"><div class="info-title">✗ Not Cached</div><div class="info-desc">Running diagnostics...</div></div>`;
     rb.style.display='inline-flex';
+    // Auto-trigger diagnosis for failed servers
+    setTimeout(()=>repairServer(),200);
   }
   document.getElementById('edit-modal').classList.remove('hidden');
 }

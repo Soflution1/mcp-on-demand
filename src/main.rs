@@ -5,6 +5,7 @@ pub mod child;
 mod config;
 mod dashboard;
 mod doctor;
+mod export;
 mod health;
 mod install;
 mod logs;
@@ -36,6 +37,8 @@ USAGE:
   McpHub logs         Tail daemon logs in real time
   McpHub add          Interactively add a new server
   McpHub benchmark    Measure start and ping times for servers
+  McpHub export       Export configuration to stdout
+  McpHub import       Import configuration from a file
   McpHub search "q"   Test BM25 search
   McpHub version      Show version
   McpHub help         Show this help
@@ -235,6 +238,14 @@ async fn main() {
         }
         Some("add") => add::run().await,
         Some("benchmark") => benchmark::run().await,
+        Some("export") => export::run_export(),
+        Some("import") => {
+            if let Some(file) = args.get(2) {
+                export::run_import(file);
+            } else {
+                eprintln!("Usage: McpHub import <file>");
+            }
+        }
         Some("generate") => cmd_generate().await,
         Some("dashboard") | Some("ui") | Some("web") => dashboard::start_dashboard().await,
         Some("install") => install::install(),

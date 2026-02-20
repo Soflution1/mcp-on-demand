@@ -20,6 +20,7 @@ struct ChildProcess {
     tools: Vec<ToolDef>,
     last_used: Instant,
     server_name: String,
+    protocol_version: String,
 }
 
 pub struct ChildManager {
@@ -166,19 +167,25 @@ impl ChildManager {
             tools: Vec::new(),
             last_used: Instant::now(),
             server_name: name.to_string(),
+            protocol_version: "2024-11-05".to_string(),
         };
 
         // Initialize MCP handshake
-        let _init_result = send_request(
+        let init_result = send_request(
             &mut proc,
             "initialize",
             serde_json::json!({
                 "protocolVersion": "2024-11-05",
                 "capabilities": {},
-                "clientInfo": { "name": "McpHub", "version": "2.0.0" }
+                "clientInfo": { "name": "McpHub", "version": "4.0.0" }
             }),
         )
         .await?;
+
+        if let Some(pv) = init_result.get("protocolVersion").and_then(|v| v.as_str()) {
+            proc.protocol_version = pv.to_string();
+            eprintln!("[McpHub][INFO] Server '{}' negotiated protocol: {}", name, pv);
+        }
 
         // Send initialized notification
         send_notification(&mut proc, "notifications/initialized", serde_json::json!({}))

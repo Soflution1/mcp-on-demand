@@ -19,6 +19,7 @@ struct ChildProcess {
     next_id: u64,
     tools: Vec<ToolDef>,
     last_used: Instant,
+    server_name: String,
 }
 
 pub struct ChildManager {
@@ -164,6 +165,7 @@ impl ChildManager {
             next_id: 1,
             tools: Vec::new(),
             last_used: Instant::now(),
+            server_name: name.to_string(),
         };
 
         // Initialize MCP handshake
@@ -204,6 +206,48 @@ impl ChildManager {
         children.insert(name.to_string(), proc);
 
         Ok(tools)
+    }
+
+    /// Call a generic method on a specific server.
+    pub async fn call_method(
+        &self,
+        server_name: &str,
+        method: &str,
+        arguments: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let resolved = self.resolve_name(server_name).await
+            .ok_or_else(|| format!("Unknown server: {}", server_name))?;
+        let server_name = resolved.as_str();
+
+        if !self.is_running(server_name).await {
+            return Err(format!("Server not running: {}", server_name));
+        }
+
+        let result = {
+            let mut children = self.children.lock().await;
+            let proc = children
+                .get_mut(server_name)
+                .ok_or_else(|| format!("Server not running: {}", server_name))?;
+
+            proc.last_used = Instant::now();
+            send_request(proc, method, arguments.clone()).await
+        };
+
+        match result {
+            Err(e) if is_connection_error(&e) => {
+                eprintln!("[McpHub][WARN] Connection error on '{}': {}. Retrying...", server_name, e);
+                self.restart_server(server_name).await?;
+                
+                let mut children = self.children.lock().await;
+                let proc = children
+                    .get_mut(server_name)
+                    .ok_or_else(|| format!("Server not running: {}", server_name))?;
+
+                proc.last_used = Instant::now();
+                send_request(proc, method, arguments).await
+            }
+            other => other,
+        }
     }
 
     /// Call a tool on a specific server.
@@ -295,6 +339,50 @@ impl ChildManager {
     pub async fn server_names(&self) -> Vec<String> {
         let configs = self.configs.lock().await;
         configs.keys().cloned().collect()
+    }
+
+    /// Send a request to all running servers.
+    pub async fn request_all_running(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Vec<(String, Result<serde_json::Value, String>)> {
+        let running_servers: Vec<String> = {
+            let children = self.children.lock().await;
+            children.keys().cloned().collect()
+        };
+
+        let mut results = Vec::new();
+        for name in running_servers {
+            let result = {
+                let mut children = self.children.lock().await;
+                if let Some(proc) = children.get_mut(&name) {
+                    proc.last_used = Instant::now();
+                    send_request(proc, method, params.clone()).await
+                } else {
+                    Err("Server stopped".into())
+                }
+            };
+            results.push((name, result));
+        }
+        
+        results
+    }
+
+    /// Forward a notification to a specific server.
+    pub async fn forward_notification(
+        &self,
+        server_name: &str,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<(), String> {
+        let mut children = self.children.lock().await;
+        if let Some(proc) = children.get_mut(server_name) {
+            proc.last_used = Instant::now();
+            send_notification(proc, method, params).await
+        } else {
+            Err("Server not running".into())
+        }
     }
 
     /// Run idle reaper: stop servers not used in idle_timeout_ms.
@@ -454,6 +542,17 @@ async fn send_request_inner(
 
         // Skip notifications
         if parsed.get("id").is_none() {
+            if let Some(method) = parsed.get("method").and_then(|v| v.as_str()) {
+                if method == "notifications/message" {
+                    if let Some(params) = parsed.get("params") {
+                        if let Some(level) = params.get("level").and_then(|v| v.as_str()) {
+                            if let Some(data) = params.get("data").and_then(|v| v.as_str()) {
+                                eprintln!("[McpHub][{}][{}] {}", proc.server_name, level.to_uppercase(), data);
+                            }
+                        }
+                    }
+                }
+            }
             continue;
         }
 

@@ -144,13 +144,17 @@ impl ProxyServer {
             "notifications/initialized" => None,
             "tools/list" => Some(self.handle_tools_list(req.id).await),
             "tools/call" => Some(self.handle_tools_call(req.id, req.params).await),
-            "prompts/list" => Some(JsonRpcResponse::success(req.id, serde_json::json!({ "prompts": [] }))),
-            "prompts/get" => Some(JsonRpcResponse::error(req.id, -32602, "No prompts available".into())),
-            "resources/list" => Some(JsonRpcResponse::success(req.id, serde_json::json!({ "resources": [] }))),
-            "resources/templates/list" => Some(JsonRpcResponse::success(req.id, serde_json::json!({ "resourceTemplates": [] }))),
-            "resources/read" => Some(JsonRpcResponse::error(req.id, -32602, "No resources available".into())),
+            "prompts/list" => Some(self.handle_prompts_list(req.id).await),
+            "prompts/get" => Some(self.handle_prompts_get(req.id, req.params).await),
+            "resources/list" => Some(self.handle_resources_list(req.id).await),
+            "resources/templates/list" => Some(self.handle_resource_templates_list(req.id).await),
+            "resources/read" => Some(self.handle_resources_read(req.id, req.params).await),
             "completion/complete" => Some(JsonRpcResponse::success(req.id, serde_json::json!({ "completion": { "values": [] } }))),
             "ping" => Some(JsonRpcResponse::success(req.id, serde_json::json!({}))),
+            "notifications/cancelled" => {
+                self.handle_cancel(req.params).await;
+                None
+            }
             _ => {
                 eprintln!("[McpHub][WARN] Unknown method: {}", req.method);
                 Some(JsonRpcResponse::error(
@@ -487,6 +491,106 @@ impl ProxyServer {
         match self.child_manager.call_tool(server, tool, arguments).await {
             Ok(result) => JsonRpcResponse::success(id, result),
             Err(e) => JsonRpcResponse::error(id, -32000, e),
+        }
+    }
+
+    async fn handle_prompts_list(&self, id: Option<serde_json::Value>) -> JsonRpcResponse {
+        let results = self.child_manager.request_all_running("prompts/list", serde_json::json!({})).await;
+        let mut all_prompts = Vec::new();
+        for (server_name, res) in results {
+            if let Ok(mut val) = res {
+                if let Some(prompts) = val.get_mut("prompts").and_then(|v| v.as_array_mut()) {
+                    for prompt in prompts {
+                        if let Some(name) = prompt.get("name").and_then(|v| v.as_str()) {
+                            prompt["name"] = serde_json::json!(format!("{}__{}", server_name, name));
+                        }
+                        all_prompts.push(prompt.clone());
+                    }
+                }
+            }
+        }
+        JsonRpcResponse::success(id, serde_json::json!({ "prompts": all_prompts }))
+    }
+
+    async fn handle_prompts_get(&self, id: Option<serde_json::Value>, args: serde_json::Value) -> JsonRpcResponse {
+        let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        let parts: Vec<&str> = name.splitn(2, "__").collect();
+        if parts.len() != 2 {
+            return JsonRpcResponse::error(id, -32602, "Invalid prompt name format".into());
+        }
+        let server = parts[0];
+        let prompt_name = parts[1];
+        
+        let mut new_args = args.clone();
+        new_args["name"] = serde_json::json!(prompt_name);
+        
+        match self.child_manager.call_method(server, "prompts/get", new_args).await {
+            Ok(res) => JsonRpcResponse::success(id, res),
+            Err(e) => JsonRpcResponse::error(id, -32000, e),
+        }
+    }
+
+    async fn handle_resources_list(&self, id: Option<serde_json::Value>) -> JsonRpcResponse {
+        let results = self.child_manager.request_all_running("resources/list", serde_json::json!({})).await;
+        let mut all_resources = Vec::new();
+        for (server_name, res) in results {
+            if let Ok(mut val) = res {
+                if let Some(resources) = val.get_mut("resources").and_then(|v| v.as_array_mut()) {
+                    for res in resources {
+                        if let Some(uri) = res.get("uri").and_then(|v| v.as_str()) {
+                            res["uri"] = serde_json::json!(format!("{}__{}", server_name, uri));
+                        }
+                        all_resources.push(res.clone());
+                    }
+                }
+            }
+        }
+        JsonRpcResponse::success(id, serde_json::json!({ "resources": all_resources }))
+    }
+
+    async fn handle_resource_templates_list(&self, id: Option<serde_json::Value>) -> JsonRpcResponse {
+        let results = self.child_manager.request_all_running("resources/templates/list", serde_json::json!({})).await;
+        let mut all_templates = Vec::new();
+        for (server_name, res) in results {
+            if let Ok(mut val) = res {
+                if let Some(templates) = val.get_mut("resourceTemplates").and_then(|v| v.as_array_mut()) {
+                    for tmpl in templates {
+                        if let Some(uri_template) = tmpl.get("uriTemplate").and_then(|v| v.as_str()) {
+                            tmpl["uriTemplate"] = serde_json::json!(format!("{}__{}", server_name, uri_template));
+                        }
+                        all_templates.push(tmpl.clone());
+                    }
+                }
+            }
+        }
+        JsonRpcResponse::success(id, serde_json::json!({ "resourceTemplates": all_templates }))
+    }
+
+    async fn handle_resources_read(&self, id: Option<serde_json::Value>, args: serde_json::Value) -> JsonRpcResponse {
+        let uri = args.get("uri").and_then(|v| v.as_str()).unwrap_or("");
+        let parts: Vec<&str> = uri.splitn(2, "__").collect();
+        if parts.len() != 2 {
+            return JsonRpcResponse::error(id, -32602, "Invalid resource uri format".into());
+        }
+        let server = parts[0];
+        let actual_uri = parts[1];
+        
+        let mut new_args = args.clone();
+        new_args["uri"] = serde_json::json!(actual_uri);
+        
+        match self.child_manager.call_method(server, "resources/read", new_args).await {
+            Ok(res) => JsonRpcResponse::success(id, res),
+            Err(e) => JsonRpcResponse::error(id, -32000, e),
+        }
+    }
+
+    async fn handle_cancel(&self, args: serde_json::Value) {
+        // Just broadcast the cancellation to all running servers.
+        // ChildManager does not keep track of request IDs globally.
+        // The server will simply ignore the cancellation if it doesn't know the request ID.
+        let running_servers = self.child_manager.server_names().await;
+        for server in running_servers {
+            let _ = self.child_manager.forward_notification(&server, "notifications/cancelled", args.clone()).await;
         }
     }
 }

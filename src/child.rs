@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Instant;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
@@ -23,9 +24,14 @@ struct ChildProcess {
     protocol_version: String,
 }
 
+struct ServerPool {
+    procs: Vec<Arc<Mutex<ChildProcess>>>,
+    next_idx: AtomicUsize,
+}
+
 pub struct ChildManager {
     configs: Arc<Mutex<HashMap<String, ServerConfig>>>,
-    children: Arc<Mutex<HashMap<String, ChildProcess>>>,
+    pools: Arc<Mutex<HashMap<String, Arc<ServerPool>>>>,
     idle_timeout_ms: u64,
 }
 
@@ -33,7 +39,7 @@ impl ChildManager {
     pub fn new(configs: HashMap<String, ServerConfig>, idle_timeout_ms: u64) -> Self {
         Self {
             configs: Arc::new(Mutex::new(configs)),
-            children: Arc::new(Mutex::new(HashMap::new())),
+            pools: Arc::new(Mutex::new(HashMap::new())),
             idle_timeout_ms,
         }
     }
@@ -41,7 +47,6 @@ impl ChildManager {
     pub async fn update_configs(&self, new_configs: HashMap<String, ServerConfig>) {
         let mut current_configs = self.configs.lock().await;
         
-        // Find removed or changed servers and stop them
         let mut to_stop = Vec::new();
         for (name, old_cfg) in current_configs.iter() {
             if let Some(new_cfg) = new_configs.get(name) {
@@ -60,22 +65,17 @@ impl ChildManager {
         *current_configs = new_configs;
     }
 
-    /// Resolve a server name case-insensitively.
-    /// Matches exact first, then case-insensitive, then kebab/snake normalization.
     async fn resolve_name(&self, name: &str) -> Option<String> {
         let configs = self.configs.lock().await;
-        // 1. Exact match
         if configs.contains_key(name) {
             return Some(name.to_string());
         }
-        // 2. Case-insensitive match
         let lower = name.to_lowercase();
         for key in configs.keys() {
             if key.to_lowercase() == lower {
                 return Some(key.clone());
             }
         }
-        // 3. Normalize: strip hyphens/underscores, compare lowercase
         let normalized = lower.replace(['-', '_'], "");
         for key in configs.keys() {
             let key_normalized = key.to_lowercase().replace(['-', '_'], "");
@@ -86,16 +86,15 @@ impl ChildManager {
         None
     }
 
-    /// Start a server by name with retry logic. Returns its tools list.
     pub async fn start_server(&self, name: &str) -> Result<Vec<ToolDef>, String> {
         let name_resolved = self.resolve_name(name).await
             .ok_or_else(|| format!("Unknown server: {}", name))?;
         let name = name_resolved.as_str();
 
-        // Already running?
         {
-            let mut children = self.children.lock().await;
-            if let Some(proc) = children.get_mut(name) {
+            let pools = self.pools.lock().await;
+            if let Some(pool) = pools.get(name) {
+                let mut proc = pool.procs[0].lock().await;
                 proc.last_used = Instant::now();
                 return Ok(proc.tools.clone());
             }
@@ -112,7 +111,7 @@ impl ChildManager {
                 tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
             }
 
-            match self.try_start_server(name).await {
+            match self.try_start_pool(name).await {
                 Ok(tools) => return Ok(tools),
                 Err(e) => {
                     last_error = e;
@@ -126,96 +125,98 @@ impl ChildManager {
         Err(format!("{} (after {} attempts)", last_error, MAX_RETRIES))
     }
 
-    /// Single attempt to start a server.
-    async fn try_start_server(&self, name: &str) -> Result<Vec<ToolDef>, String> {
+    async fn try_start_pool(&self, name: &str) -> Result<Vec<ToolDef>, String> {
         let config = {
             let configs = self.configs.lock().await;
-            configs
-                .get(name)
-                .ok_or_else(|| format!("Unknown server: {}", name))?
-                .clone()
+            configs.get(name).ok_or_else(|| format!("Unknown server: {}", name))?.clone()
         };
 
-        let start = Instant::now();
-        eprintln!("[McpHub][INFO] Starting server: {}", name);
+        let pool_size = config.pool.max(1);
+        let mut procs = Vec::new();
+        let mut first_tools = Vec::new();
 
-        let mut cmd = Command::new(&config.command);
-        cmd.args(&config.args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+        for i in 0..pool_size {
+            let start = Instant::now();
+            if pool_size > 1 {
+                eprintln!("[McpHub][INFO] Starting server: {} (instance {}/{})", name, i + 1, pool_size);
+            } else {
+                eprintln!("[McpHub][INFO] Starting server: {}", name);
+            }
 
-        for (k, v) in &config.env {
-            cmd.env(k, v);
-        }
+            let mut cmd = Command::new(&config.command);
+            cmd.args(&config.args)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null());
 
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| format!("Failed to spawn {}: {}", name, e))?;
+            for (k, v) in &config.env {
+                cmd.env(k, v);
+            }
 
-        let stdin = child.stdin.take().ok_or("No stdin")?;
-        let stdout = child.stdout.take().ok_or("No stdout")?;
+            let mut child = cmd.spawn().map_err(|e| format!("Failed to spawn {}: {}", name, e))?;
+            let stdin = child.stdin.take().ok_or("No stdin")?;
+            let stdout = child.stdout.take().ok_or("No stdout")?;
 
-        let reader = BufReader::new(stdout);
-        let lines = Arc::new(Mutex::new(reader.lines()));
+            let reader = BufReader::new(stdout);
+            let lines = Arc::new(Mutex::new(reader.lines()));
 
-        let mut proc = ChildProcess {
-            child,
-            stdin,
-            stdout_lines: lines,
-            next_id: 1,
-            tools: Vec::new(),
-            last_used: Instant::now(),
-            server_name: name.to_string(),
-            protocol_version: "2024-11-05".to_string(),
-        };
+            let mut proc = ChildProcess {
+                child,
+                stdin,
+                stdout_lines: lines,
+                next_id: 1,
+                tools: Vec::new(),
+                last_used: Instant::now(),
+                server_name: name.to_string(),
+                protocol_version: "2024-11-05".to_string(),
+            };
 
-        // Initialize MCP handshake
-        let init_result = send_request(
-            &mut proc,
-            "initialize",
-            serde_json::json!({
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": { "name": "McpHub", "version": "4.0.0" }
-            }),
-        )
-        .await?;
-
-        if let Some(pv) = init_result.get("protocolVersion").and_then(|v| v.as_str()) {
-            proc.protocol_version = pv.to_string();
-            eprintln!("[McpHub][INFO] Server '{}' negotiated protocol: {}", name, pv);
-        }
-
-        // Send initialized notification
-        send_notification(&mut proc, "notifications/initialized", serde_json::json!({}))
+            let init_result = send_request(
+                &mut proc,
+                "initialize",
+                serde_json::json!({
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": { "name": "McpHub", "version": "4.0.0" }
+                }),
+            )
             .await?;
 
-        // List tools
-        let tools_result = send_request(&mut proc, "tools/list", serde_json::json!({})).await?;
+            if let Some(pv) = init_result.get("protocolVersion").and_then(|v| v.as_str()) {
+                proc.protocol_version = pv.to_string();
+                if i == 0 {
+                    eprintln!("[McpHub][INFO] Server '{}' negotiated protocol: {}", name, pv);
+                }
+            }
 
-        let tools: Vec<ToolDef> = tools_result
-            .get("tools")
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .unwrap_or_default();
+            send_notification(&mut proc, "notifications/initialized", serde_json::json!({})).await?;
+            let tools_result = send_request(&mut proc, "tools/list", serde_json::json!({})).await?;
+            let tools: Vec<ToolDef> = tools_result
+                .get("tools")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default();
 
-        let elapsed = start.elapsed();
-        eprintln!(
-            "[McpHub][INFO] Server '{}' ready: {} tools in {:.0}ms",
-            name,
-            tools.len(),
-            elapsed.as_secs_f64() * 1000.0
-        );
+            if i == 0 {
+                let elapsed = start.elapsed();
+                eprintln!("[McpHub][INFO] Server '{}' ready: {} tools in {:.0}ms", name, tools.len(), elapsed.as_secs_f64() * 1000.0);
+                first_tools = tools.clone();
+            }
 
-        proc.tools = tools.clone();
+            proc.tools = tools;
+            procs.push(Arc::new(Mutex::new(proc)));
+        }
 
-        let mut children = self.children.lock().await;
-        children.insert(name.to_string(), proc);
+        let pool = Arc::new(ServerPool {
+            procs,
+            next_idx: AtomicUsize::new(0),
+        });
 
-        Ok(tools)
+        let mut pools = self.pools.lock().await;
+        pools.insert(name.to_string(), pool);
+
+        Ok(first_tools)
     }
 
-    /// Call a generic method on a specific server.
     pub async fn call_method(
         &self,
         server_name: &str,
@@ -230,14 +231,16 @@ impl ChildManager {
             return Err(format!("Server not running: {}", server_name));
         }
 
-        let result = {
-            let mut children = self.children.lock().await;
-            let proc = children
-                .get_mut(server_name)
-                .ok_or_else(|| format!("Server not running: {}", server_name))?;
+        let pool = {
+            let pools = self.pools.lock().await;
+            pools.get(server_name).cloned().ok_or_else(|| format!("Server not running: {}", server_name))?
+        };
 
+        let idx = pool.next_idx.fetch_add(1, Ordering::Relaxed) % pool.procs.len();
+        let result = {
+            let mut proc = pool.procs[idx].lock().await;
             proc.last_used = Instant::now();
-            send_request(proc, method, arguments.clone()).await
+            send_request(&mut proc, method, arguments.clone()).await
         };
 
         match result {
@@ -245,19 +248,20 @@ impl ChildManager {
                 eprintln!("[McpHub][WARN] Connection error on '{}': {}. Retrying...", server_name, e);
                 self.restart_server(server_name).await?;
                 
-                let mut children = self.children.lock().await;
-                let proc = children
-                    .get_mut(server_name)
-                    .ok_or_else(|| format!("Server not running: {}", server_name))?;
+                let pool = {
+                    let pools = self.pools.lock().await;
+                    pools.get(server_name).cloned().ok_or_else(|| format!("Server not running: {}", server_name))?
+                };
 
+                let idx = pool.next_idx.fetch_add(1, Ordering::Relaxed) % pool.procs.len();
+                let mut proc = pool.procs[idx].lock().await;
                 proc.last_used = Instant::now();
-                send_request(proc, method, arguments).await
+                send_request(&mut proc, method, arguments).await
             }
             other => other,
         }
     }
 
-    /// Call a tool on a specific server.
     pub async fn call_tool(
         &self,
         server_name: &str,
@@ -268,28 +272,24 @@ impl ChildManager {
             .ok_or_else(|| format!("Unknown server: {}", server_name))?;
         let server_name = resolved.as_str();
 
-        // Auto-start if needed
         if !self.is_running(server_name).await {
             self.start_server(server_name).await?;
         }
 
+        let pool = {
+            let pools = self.pools.lock().await;
+            pools.get(server_name).cloned().ok_or_else(|| format!("Server not running: {}", server_name))?
+        };
+
+        let idx = pool.next_idx.fetch_add(1, Ordering::Relaxed) % pool.procs.len();
         let result = {
-            let mut children = self.children.lock().await;
-            let proc = children
-                .get_mut(server_name)
-                .ok_or_else(|| format!("Server not running: {}", server_name))?;
-
+            let mut proc = pool.procs[idx].lock().await;
             proc.last_used = Instant::now();
-
             send_request(
-                proc,
+                &mut proc,
                 "tools/call",
-                serde_json::json!({
-                    "name": tool_name,
-                    "arguments": arguments.clone(),
-                }),
-            )
-            .await
+                serde_json::json!({ "name": tool_name, "arguments": arguments.clone() }),
+            ).await
         };
 
         match result {
@@ -297,166 +297,196 @@ impl ChildManager {
                 eprintln!("[McpHub][WARN] Connection error on '{}': {}. Retrying...", server_name, e);
                 self.restart_server(server_name).await?;
                 
-                let mut children = self.children.lock().await;
-                let proc = children
-                    .get_mut(server_name)
-                    .ok_or_else(|| format!("Server not running: {}", server_name))?;
+                let pool = {
+                    let pools = self.pools.lock().await;
+                    pools.get(server_name).cloned().ok_or_else(|| format!("Server not running: {}", server_name))?
+                };
 
+                let idx = pool.next_idx.fetch_add(1, Ordering::Relaxed) % pool.procs.len();
+                let mut proc = pool.procs[idx].lock().await;
                 proc.last_used = Instant::now();
-
                 send_request(
-                    proc,
+                    &mut proc,
                     "tools/call",
-                    serde_json::json!({
-                        "name": tool_name,
-                        "arguments": arguments,
-                    }),
-                )
-                .await
+                    serde_json::json!({ "name": tool_name, "arguments": arguments }),
+                ).await
             }
             other => other,
         }
     }
 
     pub async fn is_running(&self, name: &str) -> bool {
-        let children = self.children.lock().await;
-        children.contains_key(name)
+        let pools = self.pools.lock().await;
+        pools.contains_key(name)
     }
 
-    /// Stop a server by name.
     #[allow(dead_code)]
     pub async fn stop_server(&self, name: &str) {
-        let mut children = self.children.lock().await;
-        if let Some(mut proc) = children.remove(name) {
-            let _ = proc.child.kill().await;
+        let mut pools = self.pools.lock().await;
+        if let Some(pool) = pools.remove(name) {
+            for proc_arc in &pool.procs {
+                let mut proc = proc_arc.lock().await;
+                let _ = proc.child.kill().await;
+            }
             eprintln!("[McpHub][INFO] Stopped server: {}", name);
         }
     }
 
-    /// Stop all servers.
     pub async fn stop_all(&self) {
-        let mut children = self.children.lock().await;
-        for (name, mut proc) in children.drain() {
-            let _ = proc.child.kill().await;
+        let mut pools = self.pools.lock().await;
+        for (name, pool) in pools.drain() {
+            for proc_arc in &pool.procs {
+                let mut proc = proc_arc.lock().await;
+                let _ = proc.child.kill().await;
+            }
             eprintln!("[McpHub][INFO] Stopped server: {}", name);
         }
     }
 
-    /// Returns list of all configured server names.
     pub async fn server_names(&self) -> Vec<String> {
         let configs = self.configs.lock().await;
         configs.keys().cloned().collect()
     }
 
-    /// Send a request to all running servers.
     pub async fn request_all_running(
         &self,
         method: &str,
         params: serde_json::Value,
     ) -> Vec<(String, Result<serde_json::Value, String>)> {
         let running_servers: Vec<String> = {
-            let children = self.children.lock().await;
-            children.keys().cloned().collect()
+            let pools = self.pools.lock().await;
+            pools.keys().cloned().collect()
         };
 
         let mut results = Vec::new();
         for name in running_servers {
-            let result = {
-                let mut children = self.children.lock().await;
-                if let Some(proc) = children.get_mut(&name) {
-                    proc.last_used = Instant::now();
-                    send_request(proc, method, params.clone()).await
-                } else {
-                    Err("Server stopped".into())
-                }
+            let pool_opt = {
+                let pools = self.pools.lock().await;
+                pools.get(&name).cloned()
             };
-            results.push((name, result));
+            if let Some(pool) = pool_opt {
+                let idx = pool.next_idx.fetch_add(1, Ordering::Relaxed) % pool.procs.len();
+                let mut proc = pool.procs[idx].lock().await;
+                proc.last_used = Instant::now();
+                let res = send_request(&mut proc, method, params.clone()).await;
+                results.push((name, res));
+            } else {
+                results.push((name, Err("Server stopped".into())));
+            }
         }
         
         results
     }
 
-    /// Forward a notification to a specific server.
     pub async fn forward_notification(
         &self,
         server_name: &str,
         method: &str,
         params: serde_json::Value,
     ) -> Result<(), String> {
-        let mut children = self.children.lock().await;
-        if let Some(proc) = children.get_mut(server_name) {
+        let pool = {
+            let pools = self.pools.lock().await;
+            pools.get(server_name).cloned().ok_or_else(|| format!("Server not running: {}", server_name))?
+        };
+
+        // Forward to all instances in the pool to ensure it hits the right one
+        for proc_arc in &pool.procs {
+            let mut proc = proc_arc.lock().await;
             proc.last_used = Instant::now();
-            send_notification(proc, method, params).await
-        } else {
-            Err("Server not running".into())
+            let _ = send_notification(&mut proc, method, params.clone()).await;
         }
+
+        Ok(())
     }
 
-    /// Run idle reaper: stop servers not used in idle_timeout_ms.
     pub async fn reap_idle(&self) {
         let timeout = std::time::Duration::from_millis(self.idle_timeout_ms);
-        let mut children = self.children.lock().await;
+        let mut pools = self.pools.lock().await;
 
-        let idle_servers: Vec<String> = children
-            .iter()
-            .filter(|(_, proc)| proc.last_used.elapsed() > timeout)
-            .map(|(name, _)| name.clone())
-            .collect();
+        let mut idle_servers = Vec::new();
+        for (name, pool) in pools.iter() {
+            let mut all_idle = true;
+            for proc_arc in &pool.procs {
+                let proc = proc_arc.lock().await;
+                if proc.last_used.elapsed() <= timeout {
+                    all_idle = false;
+                    break;
+                }
+            }
+            if all_idle {
+                idle_servers.push(name.clone());
+            }
+        }
 
         for name in idle_servers {
-            if let Some(mut proc) = children.remove(&name) {
-                let _ = proc.child.kill().await;
+            if let Some(pool) = pools.remove(&name) {
+                for proc_arc in &pool.procs {
+                    let mut proc = proc_arc.lock().await;
+                    let _ = proc.child.kill().await;
+                }
                 eprintln!("[McpHub][INFO] Idle-stopped server: {}", name);
             }
         }
     }
 
-    /// Health check: ping all running servers. Returns list of dead/unresponsive ones.
     pub async fn health_check(&self) -> Vec<(String, String)> {
         let mut dead_servers: Vec<(String, String)> = Vec::new();
-        let mut children = self.children.lock().await;
+        let mut pools = self.pools.lock().await;
 
-        let names: Vec<String> = children.keys().cloned().collect();
+        let names: Vec<String> = pools.keys().cloned().collect();
         for name in names {
-            let proc = match children.get_mut(&name) {
-                Some(p) => p,
+            let pool = match pools.get(&name) {
+                Some(p) => p.clone(),
                 None => continue,
             };
 
-            // Check if process is still alive
-            match proc.child.try_wait() {
-                Ok(Some(status)) => {
-                    dead_servers.push((name.clone(), format!("Process exited: {}", status)));
-                    children.remove(&name);
-                    continue;
+            let mut pool_dead = false;
+            let mut reason = String::new();
+
+            for proc_arc in &pool.procs {
+                let mut proc = proc_arc.lock().await;
+                
+                match proc.child.try_wait() {
+                    Ok(Some(status)) => {
+                        pool_dead = true;
+                        reason = format!("Process exited: {}", status);
+                        break;
+                    }
+                    Ok(None) => {} 
+                    Err(e) => {
+                        pool_dead = true;
+                        reason = format!("Process check failed: {}", e);
+                        break;
+                    }
                 }
-                Ok(None) => {} // Still running
-                Err(e) => {
-                    dead_servers.push((name.clone(), format!("Process check failed: {}", e)));
-                    children.remove(&name);
-                    continue;
+
+                let ping_timeout = std::time::Duration::from_secs(5);
+                let ping_result = tokio::time::timeout(
+                    ping_timeout,
+                    send_request_inner(&mut proc, "ping", serde_json::json!({})),
+                ).await;
+
+                match ping_result {
+                    Ok(Ok(_)) => {} 
+                    Ok(Err(e)) => {
+                        pool_dead = true;
+                        reason = format!("Ping error: {}", e);
+                        break;
+                    }
+                    Err(_) => {
+                        pool_dead = true;
+                        reason = "Ping timeout (5s)".to_string();
+                        break;
+                    }
                 }
             }
 
-            // Try MCP ping with short timeout
-            let ping_timeout = std::time::Duration::from_secs(5);
-            let ping_result = tokio::time::timeout(
-                ping_timeout,
-                send_request_inner(proc, "ping", serde_json::json!({})),
-            ).await;
-
-            match ping_result {
-                Ok(Ok(_)) => {} // Healthy
-                Ok(Err(e)) => {
-                    dead_servers.push((name.clone(), format!("Ping error: {}", e)));
-                    if let Some(mut p) = children.remove(&name) {
-                        let _ = p.child.kill().await;
-                    }
-                }
-                Err(_) => {
-                    dead_servers.push((name.clone(), "Ping timeout (5s)".to_string()));
-                    if let Some(mut p) = children.remove(&name) {
-                        let _ = p.child.kill().await;
+            if pool_dead {
+                dead_servers.push((name.clone(), reason));
+                if let Some(pool) = pools.remove(&name) {
+                    for proc_arc in &pool.procs {
+                        let mut proc = proc_arc.lock().await;
+                        let _ = proc.child.kill().await;
                     }
                 }
             }
@@ -465,16 +495,16 @@ impl ChildManager {
         dead_servers
     }
 
-    /// Restart a server by name. Returns Ok with tool count or error.
     pub async fn restart_server(&self, name: &str) -> Result<usize, String> {
-        // Kill if still present
         {
-            let mut children = self.children.lock().await;
-            if let Some(mut proc) = children.remove(name) {
-                let _ = proc.child.kill().await;
+            let mut pools = self.pools.lock().await;
+            if let Some(pool) = pools.remove(name) {
+                for proc_arc in &pool.procs {
+                    let mut proc = proc_arc.lock().await;
+                    let _ = proc.child.kill().await;
+                }
             }
         }
-        // Small delay before restart
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         let tools = self.start_server(name).await?;
         Ok(tools.len())
@@ -484,8 +514,6 @@ impl ChildManager {
 fn is_connection_error(e: &str) -> bool {
     e.contains("Write error") || e.contains("Flush error") || e.contains("Read error") || e.contains("Server closed connection")
 }
-
-// ─── MCP Protocol Communication ─────────────────────────────
 
 const REQUEST_TIMEOUT_SECS: u64 = 30;
 
@@ -528,7 +556,6 @@ async fn send_request_inner(
         .await
         .map_err(|e| format!("Flush error: {}", e))?;
 
-    // Read lines until we get a response with our ID
     let mut lines = proc.stdout_lines.lock().await;
     loop {
         let line = lines
@@ -547,7 +574,6 @@ async fn send_request_inner(
             Err(_) => continue,
         };
 
-        // Skip notifications
         if parsed.get("id").is_none() {
             if let Some(method) = parsed.get("method").and_then(|v| v.as_str()) {
                 if method == "notifications/message" {
@@ -563,7 +589,6 @@ async fn send_request_inner(
             continue;
         }
 
-        // Check if this is our response
         if let Some(resp_id) = parsed.get("id") {
             if resp_id.as_u64() == Some(id) {
                 if let Some(error) = parsed.get("error") {

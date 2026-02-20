@@ -8,6 +8,7 @@ pub struct ServerConfig {
     pub command: String,
     pub args: Vec<String>,
     pub env: HashMap<String, String>,
+    pub pool: usize,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -90,7 +91,8 @@ fn parse_servers(json: &Value) -> HashMap<String, ServerConfig> {
             let env: HashMap<String, String> = config.get("env").and_then(|v| v.as_object())
                 .map(|obj| obj.iter().filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string()))).collect())
                 .unwrap_or_default();
-            result.insert(name.clone(), ServerConfig { command: cmd.to_string(), args, env });
+            let pool = config.get("pool").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
+            result.insert(name.clone(), ServerConfig { command: cmd.to_string(), args, env, pool });
         }
     }
     result

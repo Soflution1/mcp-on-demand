@@ -13,6 +13,7 @@ mod protocol;
 mod proxy;
 mod search;
 mod sse;
+mod update;
 
 use config::auto_detect;
 use proxy::ProxyServer;
@@ -40,6 +41,7 @@ USAGE:
   McpHub export       Export configuration to stdout
   McpHub import       Import configuration from a file
   McpHub search "q"   Test BM25 search
+  McpHub update       Self-update to the latest version on GitHub
   McpHub version      Show version
   McpHub help         Show this help
 
@@ -250,6 +252,7 @@ async fn main() {
         Some("dashboard") | Some("ui") | Some("web") => dashboard::start_dashboard().await,
         Some("install") => install::install(),
         Some("uninstall") => install::uninstall(),
+        Some("update") => update::run(),
         Some("serve") => cmd_serve().await,
         Some("search") => {
             let query = args.get(2).map(|s| s.as_str()).unwrap_or("*");

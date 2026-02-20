@@ -4,7 +4,7 @@
 
 <p align="center">
   <strong>One proxy to rule all your MCP servers.</strong><br>
-  <sub>SSE transport · Built-in web dashboard · ~99% context token savings · Zero dependencies</sub>
+  <sub>SSE transport · Auth · Connection pooling · Dashboard with metrics · ~99% context savings · Zero dependencies</sub>
 </p>
 
 <p align="center">
@@ -12,6 +12,7 @@
   <img src="https://img.shields.io/badge/language-Rust-orange" alt="Rust"/>
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT"/>
   <img src="https://img.shields.io/badge/binary-~1MB-yellow" alt="Binary size"/>
+  <img src="https://img.shields.io/badge/v5.0-latest-green" alt="v5.0"/>
 </p>
 
 ---
@@ -20,7 +21,7 @@
 
 McpHub is a single Rust binary that sits between your AI editor (Cursor, Claude Desktop, Windsurf) and all your MCP servers. Instead of loading 20+ servers with 200+ tool definitions into every prompt (~20,000 tokens), the editor sees only 2 tools: `discover` and `execute`. Token savings: **~99%**.
 
-**v4.0 adds SSE transport:** McpHub runs as a persistent daemon. Your editor connects via URL instead of spawning a process. If Cursor crashes or restarts, McpHub stays alive and reconnects instantly. No manual refresh, no lost state.
+McpHub runs as a persistent daemon. Your editor connects via SSE URL instead of spawning a process. If Cursor crashes or restarts, McpHub stays alive and reconnects instantly. No manual refresh, no lost state.
 
 ## Install
 
@@ -34,7 +35,11 @@ cd McpHub
 
 The install script builds the release binary (~1MB), installs to `~/.local/bin/McpHub`, codesigns for macOS, and generates the tool cache.
 
-### Setup (recommended: SSE mode)
+### Pre-built binaries
+
+Download from [GitHub Releases](https://github.com/Soflution1/McpHub/releases) for macOS (ARM/Intel), Linux (amd64/arm64), and Windows.
+
+### Setup (SSE mode, recommended)
 
 ```bash
 # 1. Generate tool cache (one-time, ~60s)
@@ -51,15 +56,18 @@ McpHub install
 {
   "mcpServers": {
     "McpHub": {
-      "url": "http://127.0.0.1:24680/sse"
+      "url": "http://127.0.0.1:24680/sse",
+      "headers": {
+        "Authorization": "Bearer <your-token>"
+      }
     }
   }
 }
 ```
 
-That's it. McpHub starts at login, survives editor restarts, and serves the dashboard on the same port.
+Your auth token is auto-generated on first run and stored in `~/.McpHub/auth-token`. All SSE and API endpoints require it.
 
-### Setup (classic: stdio mode)
+### Setup (stdio mode)
 
 If you prefer the editor to manage the process lifecycle:
 
@@ -73,30 +81,15 @@ If you prefer the editor to manage the process lifecycle:
 }
 ```
 
-In this mode, McpHub also starts the HTTP server on `:24680` (dashboard + SSE) in the background.
-
-## Dashboard
-
-Open `http://127.0.0.1:24680` or run:
-
-```bash
-McpHub dashboard
-```
-
-The dashboard lets you:
-- **Add servers** by pasting JSON from any MCP server README
-- **Edit servers** with syntax-highlighted JSON (tokens/secrets highlighted in red)
-- **Enable/disable** servers with a toggle
-- **Rebuild cache** in one click
-- **Monitor** token savings, cached vs failed servers
+In this mode, McpHub also starts the HTTP server on `:24680` in the background.
 
 ## How It Works
 
 ```
 Cursor (sees only 2 tools: discover + execute)
     ↓ SSE (http://127.0.0.1:24680/sse)
-McpHub daemon (BM25 search index, <0.01ms)
-    ↓ stdio
+McpHub daemon (BM25 search, auth, connection pool)
+    ↓ stdio (pooled connections)
 Your MCP servers (spawned on demand, killed when idle)
 ```
 
@@ -104,15 +97,26 @@ Your MCP servers (spawned on demand, killed when idle)
 
 1. LLM calls `discover("send email")`
 2. McpHub searches across all tools using BM25 ranking
-3. Returns matching tools with full schemas + server list
+3. Returns matching tools with full schemas
 4. LLM calls `execute("resend", "send-email", {to: "...", ...})`
-5. McpHub spawns the server (if not running), calls the tool, returns result
+5. McpHub routes to the right server, calls the tool, returns result
 
-Server names are resolved case-insensitively (e.g. `MemoryPilot`, `memory-pilot`, `memorypilot` all match).
+Server names are resolved case-insensitively.
 
 ### Passthrough mode
 
 All tools exposed directly with `server__tool` prefix. Full visibility, higher token cost. Set `"mode": "passthrough"` in settings.
+
+## Dashboard
+
+Open `http://127.0.0.1:24680` or run `McpHub dashboard`.
+
+Features:
+- Add/edit/enable/disable servers with syntax-highlighted JSON
+- Real-time metrics: calls per server, latency, error rates, uptime
+- Live log streaming with server and level filters
+- Rebuild cache in one click
+- Token savings counter
 
 ## Transport Modes
 
@@ -121,21 +125,64 @@ All tools exposed directly with `server__tool` prefix. Full visibility, higher t
 | **SSE (recommended)** | `McpHub serve` or `McpHub install` | `"url": "http://127.0.0.1:24680/sse"` | Yes |
 | **stdio** | `McpHub` (default) | `"command": "/path/to/McpHub"` | No |
 
-SSE transport uses Server-Sent Events: the editor opens a persistent HTTP connection, McpHub streams JSON-RPC responses through it. TCP keepalive detects dead connections, a session reaper cleans up stale sessions, and `try_send` prevents slow clients from blocking the server.
+SSE uses TCP keepalive (15s probe, 5s interval, 3 retries), a session reaper for stale connections, and non-blocking sends to prevent slow clients from blocking the server.
 
 ## CLI
 
 ```bash
 McpHub                  # Start proxy (stdio + HTTP server on :24680)
-McpHub serve            # Start HTTP-only server (SSE, no stdio)
-McpHub install          # Register auto-start at login (macOS/Linux/Windows)
+McpHub serve            # Start HTTP-only server (SSE daemon)
+McpHub install          # Register auto-start at login
 McpHub uninstall        # Remove auto-start
 McpHub generate         # Rebuild tool cache
 McpHub dashboard        # Open web dashboard
 McpHub status           # Show detected servers and cache info
 McpHub search "git"     # Test BM25 search
+McpHub doctor           # Full diagnostic (binary, config, cache, ports, daemon)
+McpHub logs             # Tail daemon logs (--server, --level filters)
+McpHub add              # Interactive wizard to add a server
+McpHub benchmark        # Measure start time, ping latency, tool count, RAM
+McpHub export           # Export config as encrypted bundle for sharing
+McpHub import <file>    # Import config bundle
+McpHub update           # Self-update from GitHub Releases
 McpHub version          # Show version
 ```
+
+## Security
+
+McpHub generates a unique auth token on first run, stored in `~/.McpHub/auth-token`. All HTTP endpoints (SSE, API, dashboard) require `Authorization: Bearer <token>`. CORS preflight is handled automatically.
+
+If a server crashes during a `tools/call`, McpHub auto-restarts it and retries the call once before returning an error.
+
+## Connection Pooling
+
+McpHub can maintain multiple instances of a server for parallel request handling. Configure per server:
+
+```json
+{
+  "servers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_TOKEN": "ghp_xxx" },
+      "pool_size": 3
+    }
+  }
+}
+```
+
+Requests are routed round-robin across pool instances. Default pool size is 1.
+
+## Protocol Support
+
+McpHub implements the full MCP protocol as a proxy:
+
+- **Tools**: `tools/list`, `tools/call` (aggregated from all servers)
+- **Resources**: `resources/list`, `resources/read` (aggregated)
+- **Prompts**: `prompts/list`, `prompts/get` (aggregated)
+- **Cancellation**: `notifications/cancelled` forwarded to child servers
+- **Logging**: `notifications/message` captured and forwarded
+- **Version negotiation**: Adapts to each server's supported protocol version
 
 ## Configuration
 
@@ -164,17 +211,21 @@ Config lives in `~/.McpHub/config.json`:
 
 ### Health monitoring
 
-McpHub pings running servers periodically. If one crashes, you get a native OS notification (macOS alert, Windows toast, Linux D-Bus) and the server is auto-restarted with exponential backoff (up to 3 attempts).
+McpHub pings running servers periodically. If one crashes, you get a native OS notification and the server is auto-restarted with exponential backoff (up to 3 attempts).
+
+### Hot reload
+
+Edit `config.json` while the daemon is running. McpHub detects changes, diffs the config, stops removed servers, and starts new ones without a restart.
 
 ## Performance
 
 | Metric | Value |
 |---|---|
-| Binary size | ~1MB |
-| Startup | <5ms |
-| BM25 search (460 tools) | <0.01ms |
+| Binary size | ~1 MB |
+| Startup | <5 ms |
+| BM25 search (460 tools) | <0.01 ms |
 | Context token savings | ~99% |
-| RAM usage | ~5MB |
+| RAM usage | ~5 MB |
 | SSE keepalive overhead | ~40 bytes/15s |
 | Runtime dependencies | **None** |
 
@@ -188,14 +239,7 @@ McpHub pings running servers periodically. If one crashes, you get a native OS n
 | Linux | systemd user service | `~/.config/systemd/user/mcphub.service` |
 | Windows | Registry Run key | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` |
 
-`McpHub uninstall` removes it cleanly.
-
-## Environment Variables
-
-| Variable | Values | Default |
-|---|---|---|
-| `MCP_ON_DEMAND_MODE` | `discover` / `passthrough` | `discover` |
-| `MCP_ON_DEMAND_PRELOAD` | `all` / `none` | `all` |
+Pre-built binaries available for macOS ARM, macOS Intel, Linux amd64, Linux arm64, and Windows x64.
 
 ## Uninstall
 

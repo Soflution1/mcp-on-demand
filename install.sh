@@ -14,8 +14,45 @@ codesign --force --sign - "$INSTALL_DIR/McpHub"
 
 echo "✓ McpHub installed to $INSTALL_DIR/McpHub"
 echo ""
-echo "Generating cache..."
-"$INSTALL_DIR/McpHub" generate
+
+CACHE_FILE="$HOME/.McpHub/schema-cache.json"
+if [ ! -f "$CACHE_FILE" ]; then
+    echo "Cache not found. Generating cache..."
+    "$INSTALL_DIR/McpHub" generate
+else
+    echo "✓ Cache already exists."
+fi
 
 echo ""
-echo "Done. Restart Cursor to pick up the new binary."
+read -p "Do you want to install the auto-start daemon (McpHub install)? [y/N] " -n 1 -r
+echo
+if [[ $REPLY =~ ^[Yy]$ ]]; then
+    "$INSTALL_DIR/McpHub" install
+fi
+
+echo ""
+echo "========================================="
+echo "✅ McpHub installation complete!"
+echo "========================================="
+echo "Add this to your Cursor MCP settings (~/.cursor/mcp.json):"
+echo ""
+
+AUTH_TOKEN=""
+if [ -f "$HOME/.McpHub/auth-token" ]; then
+    AUTH_TOKEN=$(cat "$HOME/.McpHub/auth-token")
+fi
+
+cat <<EOF
+{
+  "mcpServers": {
+    "McpHub": {
+      "url": "http://127.0.0.1:24680/sse",
+      "headers": {
+        "Authorization": "Bearer ${AUTH_TOKEN:-<your-token>}"
+      }
+    }
+  }
+}
+EOF
+echo ""
+echo "Done. Restart Cursor to pick up the new settings."

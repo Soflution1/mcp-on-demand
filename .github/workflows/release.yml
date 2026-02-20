@@ -15,13 +15,13 @@ jobs:
         include:
           - target: aarch64-apple-darwin
             os: macos-latest
-            asset: mcp-on-demand-macos-arm.tar.gz
+            asset: McpHub-macos-arm.tar.gz
           - target: x86_64-apple-darwin
             os: macos-latest
-            asset: mcp-on-demand-macos-intel.tar.gz
+            asset: McpHub-macos-intel.tar.gz
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
-            asset: mcp-on-demand-linux-amd64.tar.gz
+            asset: McpHub-linux-amd64.tar.gz
 
     runs-on: ${{ matrix.os }}
 
@@ -39,7 +39,7 @@ jobs:
       - name: Package
         run: |
           cd target/${{ matrix.target }}/release
-          tar czf ../../../${{ matrix.asset }} mcp-on-demand
+          tar czf ../../../${{ matrix.asset }} McpHub
           cd ../../..
 
       - name: Upload artifact
@@ -65,6 +65,6 @@ jobs:
         with:
           generate_release_notes: true
           files: |
-            artifacts/mcp-on-demand-macos-arm.tar.gz/mcp-on-demand-macos-arm.tar.gz
-            artifacts/mcp-on-demand-macos-intel.tar.gz/mcp-on-demand-macos-intel.tar.gz
-            artifacts/mcp-on-demand-linux-amd64.tar.gz/mcp-on-demand-linux-amd64.tar.gz
+            artifacts/McpHub-macos-arm.tar.gz/McpHub-macos-arm.tar.gz
+            artifacts/McpHub-macos-intel.tar.gz/McpHub-macos-intel.tar.gz
+            artifacts/McpHub-linux-amd64.tar.gz/McpHub-linux-amd64.tar.gz

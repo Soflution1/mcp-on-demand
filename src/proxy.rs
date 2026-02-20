@@ -1,6 +1,8 @@
 /// Core proxy server: reads JSON-RPC from stdin, routes to child servers.
 /// Two modes: discover (2 meta-tools) or passthrough (all tools exposed).
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Instant, SystemTime};
 
 use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
@@ -11,10 +13,51 @@ use crate::health::HealthMonitor;
 use crate::protocol::*;
 use crate::search::{IndexedTool, SearchEngine};
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ServerMetrics {
+    pub call_count: u64,
+    pub error_count: u64,
+    pub total_latency_ms: u64,
+    pub last_call_time: Option<SystemTime>,
+    pub last_error: Option<String>,
+}
+
+impl Default for ServerMetrics {
+    fn default() -> Self {
+        Self {
+            call_count: 0,
+            error_count: 0,
+            total_latency_ms: 0,
+            last_call_time: None,
+            last_error: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct GlobalMetrics {
+    pub start_time: SystemTime,
+    pub total_requests: u64,
+    pub active_sse_sessions: usize,
+    pub servers: HashMap<String, ServerMetrics>,
+}
+
+impl GlobalMetrics {
+    pub fn new() -> Self {
+        Self {
+            start_time: SystemTime::now(),
+            total_requests: 0,
+            active_sse_sessions: 0,
+            servers: HashMap::new(),
+        }
+    }
+}
+
 pub struct ProxyServer {
     config: Arc<Mutex<ProxyConfig>>,
     child_manager: Arc<ChildManager>,
     search_engine: Arc<Mutex<SearchEngine>>,
+    pub metrics: Arc<Mutex<GlobalMetrics>>,
 }
 
 impl ProxyServer {
@@ -28,6 +71,7 @@ impl ProxyServer {
             config: Arc::new(Mutex::new(config)),
             child_manager,
             search_engine: Arc::new(Mutex::new(SearchEngine::new())),
+            metrics: Arc::new(Mutex::new(GlobalMetrics::new())),
         }
     }
 
@@ -463,7 +507,24 @@ impl ProxyServer {
             .cloned()
             .unwrap_or(serde_json::json!({}));
 
-        match self.child_manager.call_tool(&server, &tool, arguments).await {
+        let start_time = Instant::now();
+        let res = self.child_manager.call_tool(&server, &tool, arguments).await;
+        let elapsed = start_time.elapsed().as_millis() as u64;
+
+        {
+            let mut m = self.metrics.lock().await;
+            m.total_requests += 1;
+            let sm = m.servers.entry(server.clone()).or_default();
+            sm.call_count += 1;
+            sm.total_latency_ms += elapsed;
+            sm.last_call_time = Some(SystemTime::now());
+            if let Err(ref e) = res {
+                sm.error_count += 1;
+                sm.last_error = Some(e.clone());
+            }
+        }
+
+        match res {
             Ok(result) => JsonRpcResponse::success(id, result),
             Err(e) => JsonRpcResponse::error(id, -32000, e),
         }
@@ -488,7 +549,24 @@ impl ProxyServer {
         let server = parts[0];
         let tool = parts[1];
 
-        match self.child_manager.call_tool(server, tool, arguments).await {
+        let start_time = Instant::now();
+        let res = self.child_manager.call_tool(server, tool, arguments).await;
+        let elapsed = start_time.elapsed().as_millis() as u64;
+
+        {
+            let mut m = self.metrics.lock().await;
+            m.total_requests += 1;
+            let sm = m.servers.entry(server.to_string()).or_default();
+            sm.call_count += 1;
+            sm.total_latency_ms += elapsed;
+            sm.last_call_time = Some(SystemTime::now());
+            if let Err(ref e) = res {
+                sm.error_count += 1;
+                sm.last_error = Some(e.clone());
+            }
+        }
+
+        match res {
             Ok(result) => JsonRpcResponse::success(id, result),
             Err(e) => JsonRpcResponse::error(id, -32000, e),
         }

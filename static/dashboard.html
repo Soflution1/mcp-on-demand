@@ -119,6 +119,8 @@ header{display:flex;align-items:center;justify-content:space-between;padding:16p
     <div class="tabs">
       <div class="tab active" data-view="servers" onclick="switchView('servers')">Servers</div>
       <div class="tab" data-view="tools" onclick="switchView('tools')">Tools</div>
+      <div class="tab" data-view="metrics" onclick="switchView('metrics')">Metrics</div>
+      <div class="tab" data-view="logs" onclick="switchView('logs')">Logs</div>
       <div class="tab" data-view="settings" onclick="switchView('settings')">Settings</div>
     </div>
   </header>
@@ -145,6 +147,43 @@ header{display:flex;align-items:center;justify-content:space-between;padding:16p
   <div id="view-tools" class="hidden">
     <div class="toolbar"><div class="search"><input id="tool-search" placeholder="Search tools..." oninput="renderTools()"></div></div>
     <div class="tool-list" id="tool-list"></div>
+  </div>
+
+  <!-- Metrics View -->
+  <div id="view-metrics" class="hidden">
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:14px;padding:20px;margin-bottom:16px">
+      <h3 style="margin-bottom:16px;font-size:15px">Global Metrics</h3>
+      <div style="display:flex;gap:32px">
+        <div>
+          <div style="font-size:11px;color:var(--text-dim);text-transform:uppercase;margin-bottom:4px">Total Requests</div>
+          <div style="font-size:24px;font-weight:700;color:var(--accent)" id="metric-total-req">0</div>
+        </div>
+        <div>
+          <div style="font-size:11px;color:var(--text-dim);text-transform:uppercase;margin-bottom:4px">Active Sessions</div>
+          <div style="font-size:24px;font-weight:700;color:var(--ok)" id="metric-sessions">0</div>
+        </div>
+        <div>
+          <div style="font-size:11px;color:var(--text-dim);text-transform:uppercase;margin-bottom:4px">Uptime</div>
+          <div style="font-size:24px;font-weight:700;color:var(--blue)" id="metric-uptime">0s</div>
+        </div>
+      </div>
+    </div>
+    
+    <h3 style="margin-bottom:12px;font-size:15px">Server Metrics</h3>
+    <div class="grid" id="metrics-grid"></div>
+  </div>
+
+  <!-- Logs View -->
+  <div id="view-logs" class="hidden">
+    <div class="toolbar">
+      <button class="btn btn-ghost" onclick="clearLogs()">🚫 Clear View</button>
+      <button class="btn btn-primary" id="btn-toggle-logs" onclick="toggleLogs()">▶️ Connect Stream</button>
+      <div style="flex:1"></div>
+      <div style="font-size:11px;color:var(--text-dim)">Streaming from ~/.McpHub/mcphub.log</div>
+    </div>
+    <div id="live-logs" style="background:#0d0d14;border:1px solid var(--border);border-radius:10px;padding:12px;height:400px;overflow-y:auto;font-family:monospace;font-size:12px;line-height:1.5">
+      <div style="color:var(--text-dim)">Click 'Connect Stream' to start tailing logs...</div>
+    </div>
   </div>
 
   <!-- Settings View -->
@@ -270,8 +309,11 @@ function switchView(view){
   document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.view===view));
   document.getElementById('view-servers').classList.toggle('hidden',view!=='servers');
   document.getElementById('view-tools').classList.toggle('hidden',view!=='tools');
+  document.getElementById('view-metrics').classList.toggle('hidden',view!=='metrics');
+  document.getElementById('view-logs').classList.toggle('hidden',view!=='logs');
   document.getElementById('view-settings').classList.toggle('hidden',view!=='settings');
   if(view==='tools')renderTools();
+  if(view==='metrics')fetchMetrics();
 }
 async function fetchServers(){
   try{
@@ -524,6 +566,79 @@ function checkWelcome(){
     document.getElementById('welcome-modal').classList.remove('hidden');
   }
 }
+
+async function fetchMetrics(){
+  try{
+    const res=await fetch('/api/metrics');
+    if(!res.ok)return;
+    const m=await res.json();
+    document.getElementById('metric-total-req').textContent=m.total_requests;
+    document.getElementById('metric-sessions').textContent=m.active_sse_sessions;
+    
+    // Rust SystemTime serialization usually gives an object {secs_since_epoch, nanos_since_epoch}
+    let uptime = 0;
+    if (m.start_time && m.start_time.secs_since_epoch) {
+      uptime = Math.floor(Date.now()/1000) - m.start_time.secs_since_epoch;
+    }
+    
+    const h = Math.floor(uptime/3600);
+    const min = Math.floor((uptime%3600)/60);
+    const s = uptime%60;
+    document.getElementById('metric-uptime').textContent = h>0?`${h}h ${min}m`:(min>0?`${min}m ${s}s`:`${s}s`);
+    
+    const grid=document.getElementById('metrics-grid');
+    if(Object.keys(m.servers).length===0) {
+      grid.innerHTML='<div style="color:var(--text-dim);font-size:12px">No calls recorded yet.</div>';
+      return;
+    }
+    
+    grid.innerHTML=Object.entries(m.servers).map(([name,s])=>{
+      const errRate=s.call_count>0?Math.round((s.error_count/s.call_count)*100):0;
+      const avgLat=s.call_count>0?Math.round(s.total_latency_ms/s.call_count):0;
+      return `<div class="card" style="cursor:default">
+        <div style="font-weight:600;font-size:14px;color:var(--accent);margin-bottom:8px">${icon(name)} ${name}</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:11px">
+          <div><div style="color:var(--text-dim)">Calls</div><div style="font-size:14px;font-weight:600">${s.call_count}</div></div>
+          <div><div style="color:var(--text-dim)">Errors</div><div style="font-size:14px;font-weight:600;color:${s.error_count>0?'var(--danger)':'var(--ok)'}">${s.error_count} <span style="font-size:10px;font-weight:400;opacity:0.8">(${errRate}%)</span></div></div>
+          <div style="grid-column:1/3;margin-top:4px"><div style="color:var(--text-dim)">Avg Latency</div><div style="font-size:14px;font-weight:600">${avgLat}ms</div></div>
+        </div>
+      </div>`;
+    }).join('');
+  }catch(e){console.error(e)}
+}
+
+let logsSource=null;
+function toggleLogs(){
+  const btn=document.getElementById('btn-toggle-logs');
+  const box=document.getElementById('live-logs');
+  if(logsSource){
+    logsSource.close();logsSource=null;
+    btn.textContent='▶️ Connect Stream';
+    btn.classList.add('btn-primary');btn.classList.remove('btn-danger');
+    box.innerHTML+='<div style="color:var(--text-dim)">[Disconnected]</div>';
+  }else{
+    box.innerHTML='';
+    logsSource=new EventSource('/api/logs-stream');
+    logsSource.onmessage=e=>{
+      try{
+        const d=JSON.parse(e.data);
+        if(d.line){
+          let l=d.line.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+          if(l.includes('[ERROR]')||l.includes('[FATAL]'))l=`<span style="color:var(--danger)">${l}</span>`;
+          else if(l.includes('[WARN]'))l=`<span style="color:var(--accent)">${l}</span>`;
+          else if(l.includes('[INFO]'))l=`<span style="color:var(--blue)">${l}</span>`;
+          box.innerHTML+=`<div>${l}</div>`;
+          box.scrollTop=box.scrollHeight;
+        }else if(d.error){
+          box.innerHTML+=`<div style="color:var(--danger)">${d.error}</div>`;
+        }
+      }catch(err){}
+    };
+    btn.textContent='⏸️ Disconnect';
+    btn.classList.remove('btn-primary');btn.classList.add('btn-danger');
+  }
+}
+function clearLogs(){document.getElementById('live-logs').innerHTML=''}
 
 fetchServers();
 checkWelcome();

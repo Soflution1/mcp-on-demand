@@ -40,7 +40,18 @@ pub fn get_auth_token() -> String {
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
+    
     let _ = fs::write(&path, &token);
+    
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(mut perms) = fs::metadata(&path).map(|m| m.permissions()) {
+            perms.set_mode(0o600);
+            let _ = fs::set_permissions(&path, perms);
+        }
+    }
+    
     token
 }
 
@@ -376,6 +387,18 @@ fn handle_get_settings() -> Vec<u8> {
         .cloned()
         .unwrap_or(json!({"mode": "discover", "idleTimeout": 300}));
     json_ok(settings)
+}
+
+async fn handle_get_metrics(proxy: Option<Arc<ProxyServer>>, sse: Option<Arc<SseManager>>) -> Vec<u8> {
+    if let Some(p) = proxy {
+        let mut m = p.metrics.lock().await;
+        if let Some(s) = sse {
+            m.active_sse_sessions = s.session_count().await;
+        }
+        json_ok(json!(*m))
+    } else {
+        json_err(503, "Metrics not available in dashboard-only mode")
+    }
 }
 
 fn handle_update_settings(body: &str) -> Vec<u8> {
@@ -725,7 +748,11 @@ async fn handle_repair_server(name: &str) -> Vec<u8> {
 
 // ─── Router ──────────────────────────────────────────────────
 
-async fn route(req: &HttpRequest) -> Vec<u8> {
+async fn route(
+    req: &HttpRequest,
+    proxy: Option<Arc<ProxyServer>>,
+    sse: Option<Arc<SseManager>>,
+) -> Vec<u8> {
     let path = req.path.split('?').next().unwrap_or(&req.path);
 
     if req.method == "OPTIONS" {
@@ -737,6 +764,7 @@ async fn route(req: &HttpRequest) -> Vec<u8> {
         ("GET", "/api/servers") => handle_get_servers(),
         ("POST", "/api/servers") => handle_add_server(&req.body),
         ("GET", "/api/settings") => handle_get_settings(),
+        ("GET", "/api/metrics") => handle_get_metrics(proxy, sse).await,
         ("PUT", "/api/settings") => handle_update_settings(&req.body),
         ("POST", "/api/generate") => handle_generate().await,
         _ => {
@@ -966,8 +994,55 @@ async fn handle_connection(
         return;
     }
 
+    if path == "/api/logs-stream" && req.method == "GET" {
+        let headers = "HTTP/1.1 200 OK\r\n\
+             Content-Type: text/event-stream\r\n\
+             Cache-Control: no-cache\r\n\
+             Connection: keep-alive\r\n\
+             Access-Control-Allow-Origin: *\r\n\
+             \r\n";
+        if stream.write_all(headers.as_bytes()).await.is_err() {
+            return;
+        }
+        
+        let log_path = config_dir().join("mcphub.log");
+        if !log_path.exists() {
+            let _ = stream.write_all(b"event: message\ndata: {\"error\": \"Log file not found\"}\n\n").await;
+            return;
+        }
+        
+        if let Ok(file) = std::fs::File::open(&log_path) {
+            use std::io::{BufRead, Seek, SeekFrom};
+            let mut reader = std::io::BufReader::new(file);
+            let mut pos = reader.seek(SeekFrom::End(0)).unwrap_or(0);
+            
+            loop {
+                let mut line = String::new();
+                match reader.read_line(&mut line) {
+                    Ok(0) => {
+                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                        if reader.seek(SeekFrom::Start(pos)).is_err() { break; }
+                    }
+                    Ok(len) => {
+                        pos += len as u64;
+                        let line_trim = line.trim();
+                        if !line_trim.is_empty() {
+                            let json_msg = serde_json::json!({ "line": line_trim });
+                            let event = format!("event: message\ndata: {}\n\n", json_msg.to_string());
+                            if stream.write_all(event.as_bytes()).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        }
+        return;
+    }
+
     // Normal dashboard routes
-    let response = route(&req).await;
+    let response = route(&req, proxy, sse).await;
     let _ = stream.write_all(&response).await;
     let _ = stream.shutdown().await;
 }

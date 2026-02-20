@@ -111,3 +111,60 @@ pub struct PromptsCapability {}
 
 #[derive(Debug, Serialize)]
 pub struct ResourcesCapability {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_jsonrpc_request_parsing() {
+        let req_str = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
+        let req: JsonRpcRequest = serde_json::from_str(req_str).unwrap();
+        assert_eq!(req.jsonrpc, "2.0");
+        assert_eq!(req.id, Some(json!(1)));
+        assert_eq!(req.method, "tools/list");
+        assert_eq!(req.params, json!(null));
+    }
+
+    #[test]
+    fn test_jsonrpc_response_success() {
+        let resp = JsonRpcResponse::success(Some(json!(1)), json!({"status": "ok"}));
+        let resp_str = serde_json::to_string(&resp).unwrap();
+        assert!(resp_str.contains(r#""jsonrpc":"2.0""#));
+        assert!(resp_str.contains(r#""id":1"#));
+        assert!(resp_str.contains(r#""result":{"status":"ok"}"#));
+        assert!(!resp_str.contains("error"));
+    }
+
+    #[test]
+    fn test_jsonrpc_response_error() {
+        let resp = JsonRpcResponse::error(Some(json!(2)), -32601, "Method not found".to_string());
+        let resp_str = serde_json::to_string(&resp).unwrap();
+        assert!(resp_str.contains(r#""jsonrpc":"2.0""#));
+        assert!(resp_str.contains(r#""id":2"#));
+        assert!(resp_str.contains(r#""error":{"code":-32601,"message":"Method not found"}"#));
+        assert!(!resp_str.contains("result"));
+    }
+
+    #[test]
+    fn test_capabilities_serialization() {
+        let init_result = InitializeResult {
+            protocol_version: "2024-11-05".to_string(),
+            capabilities: Capabilities {
+                tools: ToolsCapability {},
+                prompts: PromptsCapability {},
+                resources: ResourcesCapability {},
+            },
+            server_info: ServerInfo {
+                name: "McpHub".to_string(),
+                version: "2.0.0".to_string(),
+            },
+            instructions: None,
+        };
+
+        let result_str = serde_json::to_string(&init_result).unwrap();
+        assert!(result_str.contains(r#""capabilities":{"tools":{},"prompts":{},"resources":{}}"#));
+        assert!(result_str.contains(r#""serverInfo":{"name":"McpHub","version":"2.0.0"}"#));
+    }
+}

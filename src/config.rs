@@ -185,3 +185,59 @@ fn apply_env_overrides(mut config: ProxyConfig) -> ProxyConfig {
     }
     config
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_is_self() {
+        assert!(is_self("McpHub", &json!({})));
+        assert!(is_self("mcp-hub", &json!({})));
+        assert!(!is_self("github", &json!({})));
+        assert!(is_self("test", &json!({"command": "/path/to/mcphub"})));
+        assert!(is_self("test", &json!({"command": "node", "args": ["mcphub"]})));
+    }
+
+    #[test]
+    fn test_parse_servers() {
+        let json = json!({
+            "mcpServers": {
+                "github": {
+                    "command": "npx",
+                    "args": ["-y", "@modelcontextprotocol/server-github"],
+                    "env": {
+                        "GITHUB_TOKEN": "123"
+                    }
+                },
+                "disabled_server": {
+                    "command": "test",
+                    "disabled": true
+                },
+                "McpHub": {
+                    "command": "mcphub"
+                }
+            }
+        });
+
+        let servers = parse_servers(&json);
+        
+        assert_eq!(servers.len(), 1);
+        assert!(servers.contains_key("github"));
+        assert!(!servers.contains_key("disabled_server")); // skipped disabled
+        assert!(!servers.contains_key("McpHub")); // skipped self
+        
+        let github = &servers["github"];
+        assert_eq!(github.command, "npx");
+        assert_eq!(github.args.len(), 2);
+        assert_eq!(github.env.get("GITHUB_TOKEN").unwrap(), "123");
+    }
+
+    #[test]
+    fn test_parse_servers_no_servers() {
+        let json = json!({"otherKey": "value"});
+        let servers = parse_servers(&json);
+        assert!(servers.is_empty());
+    }
+}

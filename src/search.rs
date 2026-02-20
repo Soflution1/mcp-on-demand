@@ -243,3 +243,69 @@ static STOPWORDS: std::sync::LazyLock<HashSet<&'static str>> =
         .copied()
         .collect()
     });
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn mock_tool(name: &str, desc: &str) -> IndexedTool {
+        IndexedTool {
+            name: format!("test__{}", name),
+            original_name: name.to_string(),
+            server_name: "test".to_string(),
+            description: desc.to_string(),
+            tool_def: ToolDef {
+                name: name.to_string(),
+                description: desc.to_string(),
+                input_schema: json!({"type": "object"}),
+            },
+        }
+    }
+
+    #[test]
+    fn test_tokenizer_camel_case() {
+        let terms = tokenize("readFileDisk");
+        assert!(terms.contains(&"read".to_string()));
+        assert!(terms.contains(&"file".to_string()));
+        assert!(terms.contains(&"disk".to_string()));
+    }
+
+    #[test]
+    fn test_tokenizer_stopwords() {
+        let terms = tokenize("the quick brown fox is jumping");
+        assert!(!terms.contains(&"the".to_string()));
+        assert!(!terms.contains(&"is".to_string()));
+        assert!(terms.contains(&"quick".to_string()));
+        assert!(terms.contains(&"brown".to_string()));
+        assert!(terms.contains(&"fox".to_string()));
+        assert!(terms.contains(&"jumping".to_string()));
+    }
+
+    #[test]
+    fn test_search_engine_ranking() {
+        let mut engine = SearchEngine::new();
+        let tools = vec![
+            mock_tool("read_file", "Reads a file from the disk"),
+            mock_tool("write_file", "Writes data to a file on disk"),
+            mock_tool("delete_file", "Deletes a file permanently"),
+        ];
+        engine.build_index(tools);
+
+        let results = engine.search("read disk", 5);
+        assert!(!results.is_empty());
+        assert_eq!(results[0].original_name, "read_file");
+
+        let results2 = engine.search("write", 5);
+        assert!(!results2.is_empty());
+        assert_eq!(results2[0].original_name, "write_file");
+    }
+
+    #[test]
+    fn test_empty_search() {
+        let mut engine = SearchEngine::new();
+        engine.build_index(vec![]);
+        let results = engine.search("test", 5);
+        assert!(results.is_empty());
+    }
+}

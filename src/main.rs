@@ -1,9 +1,13 @@
+mod add;
+mod benchmark;
 mod cache;
 pub mod child;
 mod config;
 mod dashboard;
+mod doctor;
 mod health;
 mod install;
+mod logs;
 mod protocol;
 mod proxy;
 mod search;
@@ -28,6 +32,10 @@ USAGE:
   McpHub install      Register McpHub to auto-start at login
   McpHub uninstall    Remove auto-start registration
   McpHub status       Show detected servers, cache, and health config
+  McpHub doctor       Run full diagnostic of the installation
+  McpHub logs         Tail daemon logs in real time
+  McpHub add          Interactively add a new server
+  McpHub benchmark    Measure start and ping times for servers
   McpHub search "q"   Test BM25 search
   McpHub version      Show version
   McpHub help         Show this help
@@ -211,6 +219,22 @@ async fn main() {
         Some("help") | Some("--help") | Some("-h") => print_help(),
         Some("version") | Some("--version") | Some("-V") => println!("McpHub v{}", VERSION),
         Some("status") => cmd_status(),
+        Some("doctor") => doctor::run(),
+        Some("logs") => {
+            let mut server = None;
+            let mut level = None;
+            let mut iter = args.iter().skip(2);
+            while let Some(arg) = iter.next() {
+                if arg == "--server" {
+                    server = iter.next().map(|s| s.as_str());
+                } else if arg == "--level" {
+                    level = iter.next().map(|s| s.as_str());
+                }
+            }
+            logs::run(server, level);
+        }
+        Some("add") => add::run().await,
+        Some("benchmark") => benchmark::run().await,
         Some("generate") => cmd_generate().await,
         Some("dashboard") | Some("ui") | Some("web") => dashboard::start_dashboard().await,
         Some("install") => install::install(),
